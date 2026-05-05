@@ -5,6 +5,7 @@
 
 [![pip](https://img.shields.io/badge/pip-0.3.0-blue.svg)](https://pypi.org/project/mutimon/)
 [![CI](https://github.com/jcubic/mutimon/actions/workflows/ci.yml/badge.svg)](https://github.com/jcubic/mutimon/actions/workflows/ci.yml)
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/mutimon?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/mutimon)
 [![mutimon GitHub repo](https://img.shields.io/badge/github-mutimon-orange?logo=github)](https://github.com/jcubic/mutimon)
 [![Coverage Status](https://coveralls.io/repos/github/jcubic/mutimon/badge.svg?branch=master)](https://coveralls.io/github/jcubic/mutimon?branch=master)
 [![LICENSE GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](https://github.com/jcubic/mutimon/blob/master/LICENSE)
