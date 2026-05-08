@@ -12,6 +12,8 @@ Usage:
     mon --force               # ignore schedules and run all rules
     mon --force <rule>        # ignore schedule and run a specific rule
     mon --dry-run             # fetch and display data without sending emails
+    mon --init                # seed state for all rules without sending emails
+    mon --init <rule>         # seed state for a specific rule
     mon --save-email          # save emails to file instead of sending
     mon --validate            # validate config and exit
     mon --verbose             # show detailed progress output
@@ -49,6 +51,10 @@ USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/1
 
 verbose = False
 _secrets = {}
+
+
+class UndefinedVariableError(Exception):
+    pass
 
 
 def log(msg):
@@ -1719,9 +1725,20 @@ def evaluate_single_validator(validator, item):
     test_expr = validator.get("test")
     if test_expr:
         try:
-            rendered = liquid.from_string(test_expr).render(**item)
+            rendered = liquid.from_string(test_expr).render(**item).strip()
+            if not rendered or not (rendered[0].isdigit() or rendered[0] in "(-"):
+                vars_in_expr = re.findall(r"\{\{\s*(\w+)\s*\}\}", test_expr)
+                missing = [v for v in vars_in_expr if v not in item]
+                raise UndefinedVariableError(
+                    f"Undefined variable(s) in validator test: "
+                    f"{', '.join(missing)}. "
+                    f"Expression: '{test_expr}', "
+                    f"available: {sorted(item.keys())}"
+                )
             if not bool(numexpr.evaluate(rendered)):
                 return False
+        except UndefinedVariableError:
+            raise
         except Exception as e:
             print(
                 f"Warning: Validator test failed for '{test_expr}': {e}",
@@ -1950,19 +1967,22 @@ def resolve_inputs(rule, validators_defs=None):
             input_spec = expand_input_each(input_spec)
         else:
             input_spec = [input_spec]
-    return [
-        {
-            "params": entry.get("params", rule.get("params", {})),
-            "validator": resolve_validator(
-                entry.get("validator"), validators_defs
-            ),
-            "track": entry.get("track"),
-        }
-        for entry in input_spec
-    ]
+    results = []
+    for entry in input_spec:
+        validator = resolve_validator(entry.get("validator"), validators_defs)
+        track = entry.get("track")
+        params = entry.get("params")
+        if params is None:
+            params = rule.get("params", {})
+        if isinstance(params, list):
+            for p in params:
+                results.append({"params": p, "validator": validator, "track": track})
+        else:
+            results.append({"params": params, "validator": validator, "track": track})
+    return results
 
 
-def process_rule(config, rule, save_only=False):
+def process_rule(config, rule, save_only=False, init=False):
     """Process a single rule: fetch, diff, notify."""
     rule_name = rule["name"]
     ref = rule["ref"]
@@ -2026,10 +2046,19 @@ def process_rule(config, rule, save_only=False):
                     item["_value"] = result["_value"]
                 item["_valid"] = True  # track keeps all items
         else:
-            for item in items:
-                item["_valid"] = (
-                    evaluate_validator(validator, item) if validator else True
+            try:
+                for item in items:
+                    item["_valid"] = (
+                        evaluate_validator(validator, item) if validator else True
+                    )
+            except UndefinedVariableError as e:
+                msg = str(e)
+                print(f"Error: {msg}", file=sys.stderr)
+                send_error_email(
+                    f"[mutimon] Config error in rule '{rule_name}'",
+                    f"Rule '{rule_name}' (ref: {ref}) has an invalid validator.\n\n{msg}",
                 )
+                return
             valid_count = sum(1 for i in items if i["_valid"])
             if validator and valid_count != len(items):
                 log(f"  Validator: {valid_count}/{len(items)} item(s) passed")
@@ -2138,47 +2167,82 @@ def process_rule(config, rule, save_only=False):
         if returning_ids:
             rule_log(rule_name, f"  !! RETURNING IDs (likely cause of duplicates): "
                      f"{sorted(returning_ids)}")
-        rule_log(rule_name, "--- RUN END ---\n")
 
     if notify_items:
-        info(f"[{rule_name}] {len(notify_items)} new item(s) — sending notification")
-
-        # Use first input's params as the base template context
-        base_params = inputs[0]["params"]
-
-        # Load and render template
-        template_str = load_template(template_path)
-        if template_str:
-            subject, body = render_email(
-                template_str, subject_template, notify_items, base_params, definition
-            )
-            if save_only:
-                save_email_to_file(rule_name, subject, body)
-            else:
-                try:
-                    send_email(config, recipient, subject, body)
-                except Exception as e:
-                    print(
-                        f"Error: Failed to send email: {e}", file=sys.stderr
-                    )
-                    print(
-                        "State not saved — will retry on next run.",
-                        file=sys.stderr,
-                    )
-                    return
-                save_email_to_file(rule_name, subject, body)
+        if init:
+            info(f"[{rule_name}] {len(notify_items)} new item(s) — skipping notification (--init)")
         else:
-            print("Warning: No template found, skipping email.", file=sys.stderr)
+            info(f"[{rule_name}] {len(notify_items)} new item(s) — sending notification")
+
+            # Use first input's params as the base template context
+            base_params = inputs[0]["params"]
+
+            # Load and render template
+            template_str = load_template(template_path)
+            if template_str:
+                subject, body = render_email(
+                    template_str, subject_template, notify_items, base_params, definition
+                )
+                if save_only:
+                    save_email_to_file(rule_name, subject, body)
+                else:
+                    try:
+                        send_email(config, recipient, subject, body)
+                    except Exception as e:
+                        print(
+                            f"Error: Failed to send email: {e}", file=sys.stderr
+                        )
+                        print(
+                            "State not saved — will retry on next run.",
+                            file=sys.stderr,
+                        )
+                        return
+                    save_email_to_file(rule_name, subject, body)
+            else:
+                print("Warning: No template found, skipping email.", file=sys.stderr)
     else:
         log(f"[{rule_name}] No changes to notify about.")
 
     # Strip transient fields before saving
+    now_iso = datetime.now().isoformat()
     for item in all_items:
         item.pop("_prev_state", None)
         item.pop("_prev_state_name", None)
         item.pop("_silent", None)
+        item["_last_seen"] = now_iso
 
-    # Save ALL items (including those that failed validator) with state
+    # Merge with previous state: keep disappeared items for retention period
+    retain_days = 30
+    current_ids = {item.get("id") for item in all_items if item.get("id")}
+    now_ts = datetime.now().timestamp()
+    cutoff = now_ts - retain_days * 86400
+    retained = 0
+    pruned = 0
+    for item in known_items:
+        item_id = item.get("id")
+        if item_id and item_id not in current_ids:
+            last_seen = item.get("_last_seen")
+            if last_seen:
+                try:
+                    ts = datetime.fromisoformat(last_seen).timestamp()
+                except ValueError:
+                    ts = now_ts
+            else:
+                ts = now_ts
+            if ts > cutoff:
+                all_items.append(item)
+                retained += 1
+            else:
+                pruned += 1
+    if retained or pruned:
+        log(f"  State merge: {retained} retained, {pruned} pruned "
+            f"(retain={retain_days}d)")
+    if logging:
+        if retained or pruned:
+            rule_log(rule_name, f"  State merge: {retained} retained, "
+                     f"{pruned} pruned (retain={retain_days}d)")
+        rule_log(rule_name, "--- RUN END ---\n")
+
     save_state(rule_name, all_items)
     save_last_run(rule_name)
     log(f"  State saved for '{rule_name}'")
@@ -2212,6 +2276,16 @@ def run():
         metavar="RULE",
         help="Ignore schedules. Without argument: run all rules. "
         "With a rule name: run only that rule.",
+    )
+    parser.add_argument(
+        "--init",
+        nargs="?",
+        const=True,
+        default=False,
+        metavar="RULE",
+        help="Seed state without sending notifications. "
+        "Without argument: init all rules. "
+        "With a rule name: init only that rule.",
     )
     parser.add_argument(
         "--validate",
@@ -2325,12 +2399,15 @@ def run():
 
     force_all = args.force is True
     force_rule = args.force if isinstance(args.force, str) else None
+    init_all = args.init is True
+    init_rule = args.init if isinstance(args.init, str) else None
 
-    if force_rule:
+    targeted_rule = force_rule or init_rule
+    if targeted_rule:
         rule_names = [r["name"] for r in rules]
-        if force_rule not in rule_names:
+        if targeted_rule not in rule_names:
             print(
-                f"Error: Rule '{force_rule}' not found. "
+                f"Error: Rule '{targeted_rule}' not found. "
                 f"Available rules: {', '.join(rule_names)}",
                 file=sys.stderr,
             )
@@ -2345,10 +2422,11 @@ def run():
             log(f"Skipping '{rule_name}' (disabled)")
             continue
 
-        if force_rule and rule_name != force_rule:
+        if targeted_rule and rule_name != targeted_rule:
             continue
 
-        if not force_all and not force_rule and not args.dry_run and not should_run_now(rule):
+        skip_schedule = force_all or force_rule or init_all or init_rule
+        if not skip_schedule and not args.dry_run and not should_run_now(rule):
             schedule = rule.get("schedule", "")
             log(f"Skipping '{rule_name}' (schedule: {schedule})")
             continue
@@ -2377,6 +2455,9 @@ def run():
                         if id_spec and not item.get("id"):
                             item["id"] = extract_id(item, id_spec)
                     all_items.extend(items)
+                except UndefinedVariableError as e:
+                    print(f"  Error: {e}", file=sys.stderr)
+                    break
                 except Exception as e:
                     print(f"  Error for params {params}: {e}", file=sys.stderr)
             info(f"  Found {len(all_items)} item(s)")
@@ -2385,7 +2466,8 @@ def run():
             if len(all_items) > 3:
                 log(f"    ... and {len(all_items) - 3} more")
         else:
-            process_rule(config, rule, save_only=args.save_email)
+            is_init = init_all or (init_rule == rule_name)
+            process_rule(config, rule, save_only=args.save_email, init=is_init)
 
     log("Done.")
 

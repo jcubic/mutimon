@@ -7,6 +7,11 @@
 * add searching and transformation of the HTML during extraction
 * add `html2text` filter
 * `mon --ai-guide` now prints the contents instead of path to the file
+* add `enabled: false` option to disable a rule
+* add per-rule debug logging (`log: true`)
+* add `mon --init` to seed state without sending notifications
+* don't swallow errors about undefined variables
+* fix duplicate notifications from websites with unstable results
 
 ## 0.2.0
 * add `--cron` option and improve cron setup
