@@ -2296,7 +2296,21 @@ def process_rule(config, rule, save_only=False, init=False):
     log(f"  State saved for '{rule_name}'")
 
 
-def run():
+class RuleNameCompleter:
+    """argcomplete completer that returns rule names from config."""
+
+    def __call__(self, **kwargs):
+        try:
+            config_path = os.path.join(MUTIMON_DIR, "config.json")
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            return [rule["name"] for rule in config.get("rules", [])]
+        except Exception:
+            return []
+
+
+def build_parser():
+    """Build the argparse parser (used by argcomplete for completion)."""
     guide_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "AI_GUIDE.md"
     )
@@ -2316,6 +2330,7 @@ def run():
         action="store_true",
         help="Save email to file instead of sending",
     )
+    rule_completer = RuleNameCompleter()
     parser.add_argument(
         "--force",
         nargs="?",
@@ -2324,7 +2339,7 @@ def run():
         metavar="RULE",
         help="Ignore schedules. Without argument: run all rules. "
         "With a rule name: run only that rule.",
-    )
+    ).completer = rule_completer
     parser.add_argument(
         "--init",
         nargs="?",
@@ -2334,7 +2349,7 @@ def run():
         help="Seed state without sending notifications. "
         "Without argument: init all rules. "
         "With a rule name: init only that rule.",
-    )
+    ).completer = rule_completer
     parser.add_argument(
         "--validate",
         action="store_true",
@@ -2371,7 +2386,23 @@ def run():
         help="Print a cron entry with the resolved path to mon. "
         "Optional schedule argument (default: '*/5 * * * *').",
     )
+    parser.add_argument(
+        "--completion",
+        choices=["bash", "zsh", "fish"],
+        metavar="SHELL",
+        help="Output shell completion script (bash, zsh, or fish)",
+    )
+    return parser, guide_path
+
+
+def run():
+    parser, guide_path = build_parser()
     args = parser.parse_args()
+
+    if args.completion:
+        import argcomplete
+        print(argcomplete.shellcode(["mon"], shell=args.completion))
+        return
 
     if args.ai_guide:
         with open(guide_path, "r", encoding="utf-8") as f:
@@ -2522,6 +2553,11 @@ def run():
 
 def main():
     """Entry point for the mon command."""
+    if "_ARGCOMPLETE" in os.environ:
+        parser, _ = build_parser()
+        import argcomplete
+        argcomplete.autocomplete(parser)
+        return
     try:
         run()
     except Exception:

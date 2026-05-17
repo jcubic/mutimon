@@ -6,6 +6,7 @@
 * add `mon --init` to seed state without sending notifications
 * don't swallow errors about undefined variables
 * fix duplicate notifications from websites with unstable results
+* add shell completion
 
 ## 0.3.0
 * add a way to interact with an API
