@@ -958,7 +958,10 @@ def extract_value(element, value_spec, default=None, locale=None):
     # Apply prefix if specified
     prefix = value_spec.get("prefix")
     if prefix:
-        raw = prefix + raw
+        if value_spec.get("parse") == "url":
+            raw = urljoin(prefix, raw)
+        else:
+            raw = prefix + raw
 
     # Apply type parsing if specified
     parse = value_spec.get("parse")

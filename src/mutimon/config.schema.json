@@ -438,8 +438,8 @@
         },
         "parse": {
           "type": "string",
-          "enum": ["number", "money", "list", "json"],
-          "description": "Parse the extracted string into a typed value. 'number': plain numeric parsing. 'money': locale-aware currency parsing via babel. 'list': split into a list using 'delimiter' regex. 'json': parse as JSON, then optionally query with JMESPath via the 'query' field. Useful for extracting structured data from <script> tags (e.g. Next.js __NEXT_DATA__) or JSON in HTML attributes."
+          "enum": ["number", "money", "list", "json", "url"],
+          "description": "Parse the extracted string into a typed value. 'number': plain numeric parsing. 'money': locale-aware currency parsing via babel. 'list': split into a list using 'delimiter' regex. 'json': parse as JSON, then optionally query with JMESPath via the 'query' field. 'url': resolve the value against 'prefix' using URL joining (handles protocol-relative, absolute, and relative URLs)."
         },
         "delimiter": {
           "type": "string",

@@ -266,6 +266,46 @@ class TestExtractValue:
         )
         assert result == "https://example.com/test"
 
+    def test_parse_url_protocol_relative(self):
+        html = '<a href="//pl.wikipedia.org/wiki/Foo">link</a>'
+        soup = BeautifulSoup(html, "html.parser")
+        el = soup.select_one("a")
+        result = main.extract_value(
+            el, {"type": "attribute", "name": "href",
+                 "parse": "url", "prefix": "https://pl.wikipedia.org"}
+        )
+        assert result == "https://pl.wikipedia.org/wiki/Foo"
+
+    def test_parse_url_absolute_path(self):
+        html = '<a href="/w/index.php?diff=123">link</a>'
+        soup = BeautifulSoup(html, "html.parser")
+        el = soup.select_one("a")
+        result = main.extract_value(
+            el, {"type": "attribute", "name": "href",
+                 "parse": "url", "prefix": "https://pl.wikipedia.org"}
+        )
+        assert result == "https://pl.wikipedia.org/w/index.php?diff=123"
+
+    def test_parse_url_full_url(self):
+        html = '<a href="https://other.example.com/page">link</a>'
+        soup = BeautifulSoup(html, "html.parser")
+        el = soup.select_one("a")
+        result = main.extract_value(
+            el, {"type": "attribute", "name": "href",
+                 "parse": "url", "prefix": "https://pl.wikipedia.org"}
+        )
+        assert result == "https://other.example.com/page"
+
+    def test_parse_url_relative(self):
+        html = '<a href="page/sub">link</a>'
+        soup = BeautifulSoup(html, "html.parser")
+        el = soup.select_one("a")
+        result = main.extract_value(
+            el, {"type": "attribute", "name": "href",
+                 "parse": "url", "prefix": "https://example.com/base/"}
+        )
+        assert result == "https://example.com/base/page/sub"
+
     def test_parse_number(self):
         el = self.soup.select_one("span.num")
         result = main.extract_value(
