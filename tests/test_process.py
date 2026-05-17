@@ -1,5 +1,6 @@
 """Tests for process_rule, fetch, and higher-level integration."""
 
+import json
 from datetime import datetime, timedelta
 from unittest import mock
 
@@ -985,6 +986,353 @@ class TestRunFunction:
         # No state saved in dry-run
         state = main.load_state("test-rule")
         assert state == []
+
+
+# ========================= flatten =========================
+
+
+class TestFlatten:
+    def setup_method(self):
+        main.setup_liquid({"defs": {}})
+
+    def _make_config(self, tmp_mutimon, url="https://example.com/{{page}}"):
+        template = tmp_mutimon / "templates" / "test"
+        template.write_text(
+            "{% for group in items %}"
+            "[{{ group | first | map: '_input' | first }}]"
+            "{% for item in group %}{{item.title}},{% endfor %}"
+            "{% endfor %}"
+        )
+        return {
+            "email": {
+                "server": {
+                    "host": "smtp.test.com",
+                    "port": 587,
+                    "password": "pass",
+                    "email": "from@test.com",
+                }
+            },
+            "defs": {
+                "test-site": {
+                    "url": url,
+                    "params": ["page"],
+                    "query": {
+                        "type": "list",
+                        "selector": "div.item",
+                        "id": {"type": "attribute", "name": "data-id"},
+                        "variables": {
+                            "title": {
+                                "selector": "h3",
+                                "value": {"type": "text"},
+                            },
+                        },
+                    },
+                }
+            },
+            "rules": [],
+        }
+
+    def _mock_fetch_pages(self, pages):
+        """Mock that returns different HTML based on the URL's page param."""
+        def side_effect(*args, **kwargs):
+            url = args[1] if len(args) > 1 else kwargs.get("url", "")
+            for key, html in pages.items():
+                if key in url:
+                    resp = mock.MagicMock()
+                    resp.text = html
+                    resp.headers = {}
+                    return resp
+            resp = mock.MagicMock()
+            resp.text = "<html><body></body></html>"
+            resp.headers = {}
+            return resp
+        return mock.patch("mutimon.main.requests.request", side_effect=side_effect)
+
+    def test_flatten_false_groups_items_by_input(self, tmp_mutimon):
+        config = self._make_config(tmp_mutimon)
+        rule = {
+            "ref": "test-site",
+            "name": "test-flatten",
+            "flatten": False,
+            "subject": "New: {{count}}",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "input": [
+                {"params": {"page": "SEO"}},
+                {"params": {"page": "UKEN"}},
+            ],
+        }
+        pages = {
+            "SEO": '<html><body><div class="item" data-id="1"><h3>A</h3></div></body></html>',
+            "UKEN": '<html><body><div class="item" data-id="2"><h3>B</h3></div></body></html>',
+        }
+        with self._mock_fetch_pages(pages):
+            with mock.patch("mutimon.main.send_email") as mock_send:
+                main.process_rule(config, rule)
+                mock_send.assert_called_once()
+                body = mock_send.call_args[0][3]
+                assert "A," in body
+                assert "B," in body
+
+    def test_flatten_false_second_group_only(self, tmp_mutimon):
+        """When first input has no new items, second group gets correct metadata."""
+        config = self._make_config(tmp_mutimon)
+        rule = {
+            "ref": "test-site",
+            "name": "test-flatten-second",
+            "flatten": False,
+            "subject": "New: {{count}}",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "input": [
+                {"params": {"page": "SEO"}},
+                {"params": {"page": "UKEN"}},
+            ],
+        }
+        # Pre-save SEO item so it's not "new"
+        main.save_state("test-flatten-second", [
+            {"id": "1", "title": "A", "_valid": True,
+             "_last_seen": "2099-01-01T00:00:00"},
+        ])
+        pages = {
+            "SEO": '<html><body><div class="item" data-id="1"><h3>A</h3></div></body></html>',
+            "UKEN": '<html><body><div class="item" data-id="2"><h3>B</h3></div></body></html>',
+        }
+        # Use a template that shows _input.page
+        template = tmp_mutimon / "templates" / "test"
+        template.write_text(
+            "{% for group in items %}"
+            "{% assign first = group | first %}"
+            "PAGE:{{ first._input.page }}:"
+            "{% for item in group %}{{item.title}},{% endfor %}"
+            "{% endfor %}"
+        )
+        with self._mock_fetch_pages(pages):
+            with mock.patch("mutimon.main.send_email") as mock_send:
+                main.process_rule(config, rule)
+                mock_send.assert_called_once()
+                body = mock_send.call_args[0][3]
+                assert "PAGE:UKEN:" in body
+                assert "PAGE:SEO:" not in body
+
+    def test_flatten_false_no_dedup(self, tmp_mutimon):
+        """With flatten=false, same ID from different inputs is kept in both groups."""
+        config = self._make_config(tmp_mutimon)
+        rule = {
+            "ref": "test-site",
+            "name": "test-no-dedup",
+            "flatten": False,
+            "subject": "New: {{count}}",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "input": [
+                {"params": {"page": "SEO"}},
+                {"params": {"page": "UKEN"}},
+            ],
+        }
+        same_html = '<html><body><div class="item" data-id="1"><h3>Item</h3></div></body></html>'
+        pages = {"SEO": same_html, "UKEN": same_html}
+        with self._mock_fetch_pages(pages):
+            with mock.patch("mutimon.main.send_email"):
+                main.process_rule(config, rule)
+        state = main.load_state("test-no-dedup")
+        assert len(state) == 2
+
+    def test_flatten_true_deduplicates(self, tmp_mutimon):
+        """With flatten=true (default), duplicate IDs are deduplicated."""
+        config = self._make_config(tmp_mutimon)
+        rule = {
+            "ref": "test-site",
+            "name": "test-dedup-flat",
+            "subject": "New: {{count}}",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "input": [
+                {"params": {"page": "SEO"}},
+                {"params": {"page": "UKEN"}},
+            ],
+        }
+        # Use flat template
+        template = tmp_mutimon / "templates" / "test"
+        template.write_text("{% for item in items %}{{item.title}},{% endfor %}")
+        same_html = '<html><body><div class="item" data-id="1"><h3>Item</h3></div></body></html>'
+        pages = {"SEO": same_html, "UKEN": same_html}
+        with self._mock_fetch_pages(pages):
+            with mock.patch("mutimon.main.send_email"):
+                main.process_rule(config, rule)
+        state = main.load_state("test-dedup-flat")
+        assert len(state) == 1
+
+    def test_flatten_false_single_input_renders_flat(self, tmp_mutimon):
+        """With flatten=false but only one input, renders as flat list."""
+        config = self._make_config(tmp_mutimon)
+        template = tmp_mutimon / "templates" / "test"
+        template.write_text("{% for item in items %}{{item.title}},{% endfor %}")
+        rule = {
+            "ref": "test-site",
+            "name": "test-flatten-single",
+            "flatten": False,
+            "subject": "New: {{count}}",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "input": [{"params": {"page": "SEO"}}],
+        }
+        pages = {
+            "SEO": '<html><body><div class="item" data-id="1"><h3>X</h3></div></body></html>',
+        }
+        with self._mock_fetch_pages(pages):
+            with mock.patch("mutimon.main.send_email") as mock_send:
+                main.process_rule(config, rule)
+                mock_send.assert_called_once()
+                body = mock_send.call_args[0][3]
+                assert "X," in body
+
+
+# ========================= rule logging details =========================
+
+
+class TestRuleLoggingDetails:
+    def setup_method(self):
+        main.setup_liquid({"defs": {}})
+
+    def _make_config(self, tmp_mutimon):
+        template = tmp_mutimon / "templates" / "test"
+        template.write_text("{{count}}")
+        return {
+            "email": {
+                "server": {
+                    "host": "smtp.test.com",
+                    "port": 587,
+                    "password": "pass",
+                    "email": "from@test.com",
+                }
+            },
+            "defs": {
+                "test-site": {
+                    "url": "https://example.com",
+                    "query": {
+                        "type": "list",
+                        "selector": "div.item",
+                        "id": {"type": "attribute", "name": "data-id"},
+                        "variables": {
+                            "title": {
+                                "selector": "h3",
+                                "value": {"type": "text"},
+                            },
+                        },
+                    },
+                }
+            },
+            "rules": [],
+        }
+
+    def _mock_fetch(self, html):
+        fake_resp = mock.MagicMock()
+        fake_resp.text = html
+        fake_resp.headers = {}
+        return mock.patch("mutimon.main.requests.request", return_value=fake_resp)
+
+    def test_log_disappeared_ids(self, tmp_mutimon, monkeypatch):
+        monkeypatch.setattr(main, "LOGS_DIR", str(tmp_mutimon / "logs"))
+        config = self._make_config(tmp_mutimon)
+        rule = {
+            "ref": "test-site",
+            "name": "test-disappeared",
+            "log": True,
+            "subject": "New: {{count}}",
+            "template": "./templates/test",
+            "email": "user@test.com",
+        }
+        main.save_state("test-disappeared", [
+            {"id": "1", "title": "Stays", "_valid": True,
+             "_last_seen": "2099-01-01T00:00:00"},
+            {"id": "99", "title": "Gone", "_valid": True,
+             "_last_seen": "2099-01-01T00:00:00"},
+        ])
+        html = '<html><body><div class="item" data-id="1"><h3>Stays</h3></div></body></html>'
+        with self._mock_fetch(html):
+            with mock.patch("mutimon.main.send_email"):
+                main.process_rule(config, rule)
+
+        log_file = tmp_mutimon / "logs" / "test-disappeared.log"
+        content = log_file.read_text()
+        assert "Disappeared IDs" in content
+        assert "99" in content
+
+    def test_log_threshold_crossed(self, tmp_mutimon, monkeypatch):
+        monkeypatch.setattr(main, "LOGS_DIR", str(tmp_mutimon / "logs"))
+        config = self._make_config(tmp_mutimon)
+        rule = {
+            "ref": "test-site",
+            "name": "test-threshold-log",
+            "log": True,
+            "subject": "New: {{count}}",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "input": [{
+                "params": {},
+                "validator": {"test": "1 == 1"},
+            }],
+        }
+        main.save_state("test-threshold-log", [
+            {"id": "1", "title": "Item", "_valid": False,
+             "_last_seen": "2099-01-01T00:00:00"},
+        ])
+        html = '<html><body><div class="item" data-id="1"><h3>Item</h3></div></body></html>'
+        with self._mock_fetch(html):
+            with mock.patch("mutimon.main.send_email"):
+                main.process_rule(config, rule)
+
+        log_file = tmp_mutimon / "logs" / "test-threshold-log.log"
+        content = log_file.read_text()
+        assert "threshold crossed" in content
+
+
+# ========================= completion and completer =========================
+
+
+class TestCompletion:
+    def test_completion_flag(self, tmp_mutimon, write_config, sample_config):
+        write_config()
+        with mock.patch("sys.argv", ["mon", "--completion", "bash"]):
+            with mock.patch("mutimon.main.init_config"):
+                main.run()
+
+    def test_completion_outputs_shellcode(self, tmp_mutimon, write_config,
+                                         sample_config, capsys):
+        write_config()
+        with mock.patch("sys.argv", ["mon", "--completion", "bash"]):
+            main.run()
+        out = capsys.readouterr().out
+        assert len(out) > 0
+
+
+class TestRuleNameCompleter:
+    def test_returns_rule_names(self, tmp_mutimon):
+        config = {
+            "rules": [
+                {"name": "rule-alpha"},
+                {"name": "rule-beta"},
+            ]
+        }
+        config_file = tmp_mutimon / "config.json"
+        config_file.write_text(json.dumps(config))
+        completer = main.RuleNameCompleter()
+        result = completer()
+        assert "rule-alpha" in result
+        assert "rule-beta" in result
+
+    def test_returns_empty_on_missing_config(self, tmp_mutimon):
+        completer = main.RuleNameCompleter()
+        result = completer()
+        assert result == []
+
+    def test_returns_empty_on_invalid_json(self, tmp_mutimon):
+        config_file = tmp_mutimon / "config.json"
+        config_file.write_text("not json")
+        completer = main.RuleNameCompleter()
+        result = completer()
+        assert result == []
 
 
 class TestMainEntryPoint:
