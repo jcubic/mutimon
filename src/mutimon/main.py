@@ -10,10 +10,10 @@ Liquid templates. Processes all rules defined in config on each run.
 Usage:
     mon                       # process rules whose schedule is due
     mon --force               # ignore schedules and run all rules
-    mon --force <rule>        # ignore schedule and run a specific rule
+    mon --force <rule> ...    # ignore schedule and run specific rules
     mon --dry-run             # fetch and display data without sending emails
     mon --init                # seed state for all rules without sending emails
-    mon --init <rule>         # seed state for a specific rule
+    mon --init <rule> ...     # seed state for specific rules
     mon --save-email          # save emails to file instead of sending
     mon --validate            # validate config and exit
     mon --verbose             # show detailed progress output
@@ -1436,6 +1436,21 @@ def find_next_page_url(html, pagination_spec, current_url):
     return None
 
 
+def dump_html(html, url):
+    """Save raw HTML to a timestamped file for diagnostics."""
+    dumps_dir = os.path.join(DATA_DIR, "dumps")
+    os.makedirs(dumps_dir, exist_ok=True)
+    safe_url = re.sub(r'[^\w\-.]', '_', url)[:100]
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dump_file = os.path.join(dumps_dir, f"{timestamp}_{safe_url}.html")
+    try:
+        with open(dump_file, "w", encoding="utf-8") as f:
+            f.write(html)
+        log(f"  HTML dump saved: {dump_file}")
+    except Exception:
+        pass
+
+
 def check_expect(html, expect_selectors, url, bs_parser="html.parser"):
     """
     Verify that expected CSS selectors exist on the page.
@@ -1599,6 +1614,7 @@ def fetch_all_items(definition, params, def_name=None):
             if page_num == 1 and expect_selectors:
                 missing = check_expect(html, expect_selectors, url, bs_parser=bs_parser)
                 if missing:
+                    dump_html(html, url)
                     raise ValueError(
                         f"HTML structure changed at {url}. "
                         f"Missing expected selector(s): {', '.join(missing)}"
@@ -2336,22 +2352,20 @@ def build_parser():
     rule_completer = RuleNameCompleter()
     parser.add_argument(
         "--force",
-        nargs="?",
-        const=True,
-        default=False,
+        nargs="*",
+        default=None,
         metavar="RULE",
-        help="Ignore schedules. Without argument: run all rules. "
-        "With a rule name: run only that rule.",
+        help="Ignore schedules. Without arguments: run all rules. "
+        "With rule names: run only those rules.",
     ).completer = rule_completer
     parser.add_argument(
         "--init",
-        nargs="?",
-        const=True,
-        default=False,
+        nargs="*",
+        default=None,
         metavar="RULE",
         help="Seed state without sending notifications. "
-        "Without argument: init all rules. "
-        "With a rule name: init only that rule.",
+        "Without arguments: init all rules. "
+        "With rule names: init only those rules.",
     ).completer = rule_completer
     parser.add_argument(
         "--validate",
@@ -2479,18 +2493,19 @@ def run():
         log("No rules to process.")
         return
 
-    force_all = args.force is True
-    force_rule = args.force if isinstance(args.force, str) else None
-    init_all = args.init is True
-    init_rule = args.init if isinstance(args.init, str) else None
+    force_all = args.force is not None and len(args.force) == 0
+    force_rules = set(args.force) if args.force else set()
+    init_all = args.init is not None and len(args.init) == 0
+    init_rules = set(args.init) if args.init else set()
 
-    targeted_rule = force_rule or init_rule
-    if targeted_rule:
-        rule_names = [r["name"] for r in rules]
-        if targeted_rule not in rule_names:
+    targeted_rules = force_rules | init_rules
+    if targeted_rules:
+        rule_names = {r["name"] for r in rules}
+        unknown = targeted_rules - rule_names
+        if unknown:
             print(
-                f"Error: Rule '{targeted_rule}' not found. "
-                f"Available rules: {', '.join(rule_names)}",
+                f"Error: Rule(s) not found: {', '.join(sorted(unknown))}. "
+                f"Available rules: {', '.join(sorted(rule_names))}",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -2504,10 +2519,10 @@ def run():
             log(f"Skipping '{rule_name}' (disabled)")
             continue
 
-        if targeted_rule and rule_name != targeted_rule:
+        if targeted_rules and rule_name not in targeted_rules:
             continue
 
-        skip_schedule = force_all or force_rule or init_all or init_rule
+        skip_schedule = force_all or force_rules or init_all or init_rules
         if not skip_schedule and not args.dry_run and not should_run_now(rule):
             schedule = rule.get("schedule", "")
             log(f"Skipping '{rule_name}' (schedule: {schedule})")
@@ -2548,7 +2563,7 @@ def run():
             if len(all_items) > 3:
                 log(f"    ... and {len(all_items) - 3} more")
         else:
-            is_init = init_all or (init_rule == rule_name)
+            is_init = init_all or rule_name in init_rules
             process_rule(config, rule, save_only=args.save_email, init=is_init)
 
     log("Done.")

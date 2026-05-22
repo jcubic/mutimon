@@ -7,6 +7,7 @@
 * don't swallow errors about undefined variables
 * fix duplicate notifications from websites with unstable results
 * add shell completion
+* allow `--force` with multiple arguments
 
 ## 0.3.0
 * add a way to interact with an API

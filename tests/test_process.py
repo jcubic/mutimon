@@ -114,6 +114,27 @@ class TestFetchAllItems:
             with pytest.raises(ValueError, match="Missing expected"):
                 main.fetch_all_items(definition, {})
 
+    def test_expect_dumps_html_on_failure(self, tmp_mutimon):
+        html = "<html><body><p>Cloudflare challenge</p></body></html>"
+        definition = {
+            "url": "https://example.com/page?q=test",
+            "query": {
+                "type": "list",
+                "selector": "div.item",
+                "expect": ["div.item"],
+                "variables": {},
+            },
+        }
+        with self._mock_fetch(html):
+            with pytest.raises(ValueError, match="Missing expected"):
+                main.fetch_all_items(definition, {})
+
+        dumps_dir = tmp_mutimon / "data" / "dumps"
+        dump_files = list(dumps_dir.glob("*.html"))
+        assert len(dump_files) == 1
+        content = dump_files[0].read_text()
+        assert "Cloudflare challenge" in content
+
     def test_reject_returns_empty(self):
         html = """
         <html><body>
@@ -958,9 +979,38 @@ class TestRunFunction:
                 with mock.patch("mutimon.main.send_email"):
                     main.run()
 
+    def test_force_multiple_rules(self, tmp_mutimon, write_config, sample_config):
+        sample_config["rules"].append({
+            "ref": "test-site",
+            "name": "test-rule-2",
+            "schedule": "0 * * * *",
+            "subject": "Test 2: {{count}} items",
+            "template": "./templates/test",
+            "email": "user@test.com",
+        })
+        write_config(sample_config)
+        template = tmp_mutimon / "templates" / "test"
+        template.write_text("{{count}}")
+        html = '<html><body><div class="item"><h3>X</h3><a href="/x">x</a></div></body></html>'
+        fake_resp = mock.MagicMock()
+        fake_resp.text = html
+        fake_resp.headers = {}
+        with mock.patch("sys.argv", ["mon", "--force", "test-rule", "test-rule-2"]):
+            with mock.patch("mutimon.main.requests.request", return_value=fake_resp):
+                with mock.patch("mutimon.main.send_email"):
+                    main.run()
+        assert len(main.load_state("test-rule")) > 0
+        assert len(main.load_state("test-rule-2")) > 0
+
     def test_force_unknown_rule_exits(self, tmp_mutimon, write_config, sample_config):
         write_config()
         with mock.patch("sys.argv", ["mon", "--force", "nonexistent"]):
+            with pytest.raises(SystemExit):
+                main.run()
+
+    def test_force_one_unknown_rule_exits(self, tmp_mutimon, write_config, sample_config):
+        write_config()
+        with mock.patch("sys.argv", ["mon", "--force", "test-rule", "nonexistent"]):
             with pytest.raises(SystemExit):
                 main.run()
 

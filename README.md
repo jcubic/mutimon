@@ -58,9 +58,9 @@ Edit `~/.mutimon/config.json` with your SMTP credentials and scraping rules, the
 ```bash
 mon                    # process rules; only prints notifications and errors
 mon --force            # ignore schedules, run all rules now
-mon --force <rule>     # ignore schedule, run only the named rule
+mon --force <rule> ... # ignore schedule, run only the named rule(s)
 mon --init             # seed state for all rules without sending notifications
-mon --init <rule>      # seed state for a specific rule without sending notifications
+mon --init <rule> ...  # seed state for specific rule(s) without sending notifications
 mon --dry-run          # fetch and display data, bypass schedules, no state changes
 mon --save-email       # save email to file instead of sending via SMTP
 mon --validate         # validate config against schema and exit
