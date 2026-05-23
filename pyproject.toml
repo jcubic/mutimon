@@ -10,7 +10,7 @@ readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.12"
 authors = [
-    {name = "Jakub T. Jankiewicz", email = "me@jcubic.pl"},
+    {name = "Jakub T. Jankiewicz", email = "jcubic@jcubic.pl"},
 ]
 keywords = ["web-scraper", "monitor", "notifications", "email", "css-selectors", "cron"]
 classifiers = [
