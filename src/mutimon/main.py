@@ -32,6 +32,7 @@ import re
 import shutil
 import smtplib
 import sys
+import time
 import traceback
 from datetime import datetime
 from email.message import EmailMessage
@@ -1486,10 +1487,12 @@ def fetch_all_items(definition, params, def_name=None):
     Returns list of item dicts.
 
     Supports format: "html" (default), "xml", or "json".
+    When "query" is absent, performs a health check: returns a single item
+    with HTTP response metadata (code, method, body, headers, error).
     Raises ValueError if 'expect' selectors are missing from the page.
     """
     fmt = definition.get("format", "html")
-    query_spec = definition["query"]
+    query_spec = definition.get("query")
     user_agent = definition.get("userAgent")
     method = definition.get("method", "GET")
 
@@ -1509,6 +1512,38 @@ def fetch_all_items(definition, params, def_name=None):
     url_template = definition.get("url", "")
     url = render_url(url_template, params, auth_data) if url_template else ""
     all_items = []
+
+    if not query_spec:
+        # Health check mode: return HTTP response metadata
+        log(f"  Health check: {url}")
+        item = {"id": url, "url": url}
+        req_headers = {"User-Agent": user_agent or USER_AGENT}
+        req_headers.update(rendered_headers)
+        try:
+            kwargs = {"headers": req_headers, "timeout": 30}
+            if method.upper() == "POST" and rendered_body is not None:
+                kwargs["json"] = rendered_body
+            start = time.monotonic()
+            resp = requests.request(method.upper(), url, **kwargs)
+            elapsed = time.monotonic() - start
+            item["http"] = {
+                "code": resp.status_code,
+                "method": method,
+                "body": resp.text,
+                "headers": {k.lower(): v for k, v in resp.headers.items()},
+                "response_time": round(elapsed, 3),
+                "error": None,
+            }
+        except Exception as e:
+            item["http"] = {
+                "code": 0,
+                "method": method,
+                "body": "",
+                "headers": {},
+                "response_time": 0.0,
+                "error": str(e),
+            }
+        return [item]
 
     if fmt == "json":
         sources = definition.get("sources")
@@ -1745,6 +1780,18 @@ def save_email_to_file(rule_name, subject, body):
     log(f"  Email saved to {email_file}")
 
 
+def _resolve_var(item, var_path):
+    """Resolve a dot-separated variable path against a nested item dict."""
+    parts = var_path.split(".")
+    value = item
+    for part in parts:
+        if isinstance(value, dict):
+            value = value.get(part, "")
+        else:
+            return ""
+    return value
+
+
 def evaluate_single_validator(validator, item):
     """
     Evaluate a single validator object against an item's variables.
@@ -1793,7 +1840,7 @@ def evaluate_single_validator(validator, item):
         for m in match_list:
             try:
                 if "var" in m:
-                    value = item.get(m["var"], "")
+                    value = _resolve_var(item, m["var"])
                 else:
                     value = liquid.from_string(m["value"]).render(**item)
                 should_exist = m.get("exist", True)
@@ -2068,7 +2115,7 @@ def process_rule(config, rule, save_only=False, init=False):
             continue
 
         # Merge params into each item and re-derive ID
-        id_spec = definition["query"].get("id")
+        id_spec = definition.get("query", {}).get("id")
         for item in items:
             for k, v in params.items():
                 if k not in item:
@@ -2544,7 +2591,7 @@ def run():
                     items = fetch_all_items(definition, params, def_name=ref)
                     if validator:
                         items = [i for i in items if evaluate_validator(validator, i)]
-                    id_spec = definition["query"].get("id")
+                    id_spec = definition.get("query", {}).get("id")
                     for item in items:
                         for k, v in params.items():
                             if k not in item:

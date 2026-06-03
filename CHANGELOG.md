@@ -1,3 +1,6 @@
+## 0.5.0
+* expose `http` data as variable
+
 ## 0.4.0
 * add `flatten` prop to control processing multiple pages in one rule
 * add `parse: "url"` for URL normalization with `urljoin`

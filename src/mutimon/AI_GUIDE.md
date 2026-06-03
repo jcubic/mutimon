@@ -183,6 +183,44 @@ Use `track` instead of `validator` when you need per-threshold notifications (e.
 - `silent: true` saves state without notifying (use for "below all thresholds" reset state)
 - Template vars: `{{ item._state_name }}`, `{{ item._prev_state_name }}`, `{{ item._value }}`
 
+## Health checks (no `query`)
+
+Definitions without a `query` section act as health checks. Mutimon makes an HTTP request and returns a single item with response metadata instead of parsing content.
+
+```json
+"health": {
+  "url": "{{ url }}"
+}
+```
+
+The returned item has an `http` object with: `code` (int, 0 on connection error), `method` (string), `body` (string), `headers` (dict, lowercase keys), `response_time` (float, seconds), `error` (string or null).
+
+Use with `track` for up/down notifications:
+
+```json
+{
+  "ref": "health",
+  "name": "my-health",
+  "schedule": "*/15 * * * *",
+  "input": [
+    { "params": { "url": "https://example.com/" } },
+    { "params": { "url": "https://api.example.com/" } }
+  ],
+  "track": [
+    { "name": "down", "test": "({{ http.code }} >= 400) | ({{ http.code }} == 0)" },
+    { "name": "up", "test": "{{ http.code }} >= 200", "silent": true }
+  ],
+  "subject": "Site down",
+  "template": "./templates/health",
+  "email": "user@example.com"
+}
+```
+
+Use `match` with `value` for header checks:
+```json
+{ "match": { "value": "{{ http.headers['content-type'] }}", "regex": "^application/json" } }
+```
+
 ## Tips
 
 - Always add `"expect"` selectors to detect page redesigns

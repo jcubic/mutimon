@@ -1385,6 +1385,208 @@ class TestRuleNameCompleter:
         assert result == []
 
 
+class TestHealthCheck:
+    """Tests for definitions without query (health check mode)."""
+
+    def _mock_response(self, status_code=200, body="OK", headers=None):
+        resp = mock.MagicMock()
+        resp.status_code = status_code
+        resp.text = body
+        resp.headers = headers or {"content-type": "text/html", "server": "nginx"}
+        resp.raise_for_status = mock.MagicMock()
+        if status_code >= 400:
+            from requests.exceptions import HTTPError
+            resp.raise_for_status.side_effect = HTTPError(response=resp)
+        return resp
+
+    def test_health_check_returns_item_with_http_metadata(self):
+        definition = {"url": "https://example.com"}
+        resp = self._mock_response(200, "OK", {"content-type": "text/html"})
+        with mock.patch("mutimon.main.requests.request", return_value=resp):
+            items = main.fetch_all_items(definition, {})
+        assert len(items) == 1
+        item = items[0]
+        assert item["id"] == "https://example.com"
+        assert item["url"] == "https://example.com"
+        assert item["http"]["code"] == 200
+        assert item["http"]["method"] == "GET"
+        assert item["http"]["body"] == "OK"
+        assert item["http"]["headers"]["content-type"] == "text/html"
+        assert item["http"]["error"] is None
+
+    def test_health_check_with_params(self):
+        definition = {"url": "https://{{ host }}/status"}
+        resp = self._mock_response(200)
+        with mock.patch("mutimon.main.requests.request", return_value=resp):
+            items = main.fetch_all_items(definition, {"host": "example.com"})
+        assert len(items) == 1
+        assert items[0]["url"] == "https://example.com/status"
+
+    def test_health_check_connection_error(self):
+        definition = {"url": "https://example.com"}
+        with mock.patch(
+            "mutimon.main.requests.request",
+            side_effect=Exception("Connection refused"),
+        ):
+            items = main.fetch_all_items(definition, {})
+        assert len(items) == 1
+        item = items[0]
+        assert item["http"]["code"] == 0
+        assert item["http"]["error"] == "Connection refused"
+        assert item["http"]["headers"] == {}
+        assert item["http"]["body"] == ""
+
+    def test_health_check_http_error(self):
+        definition = {"url": "https://example.com"}
+        resp = self._mock_response(503, "Service Unavailable")
+        with mock.patch("mutimon.main.requests.request", return_value=resp):
+            items = main.fetch_all_items(definition, {})
+        assert len(items) == 1
+        assert items[0]["http"]["code"] == 503
+
+    def test_health_check_headers_lowercase(self):
+        definition = {"url": "https://example.com"}
+        resp = self._mock_response(200, "OK", {"Content-Type": "text/html", "X-Custom": "value"})
+        with mock.patch("mutimon.main.requests.request", return_value=resp):
+            items = main.fetch_all_items(definition, {})
+        headers = items[0]["http"]["headers"]
+        assert "content-type" in headers
+        assert "x-custom" in headers
+        assert headers["content-type"] == "text/html"
+
+    def test_health_check_custom_method(self):
+        definition = {"url": "https://example.com", "method": "HEAD"}
+        resp = self._mock_response(200, "")
+        with mock.patch("mutimon.main.requests.request", return_value=resp) as mock_req:
+            main.fetch_all_items(definition, {})
+        assert mock_req.call_args[0][0] == "HEAD"
+
+    def test_health_check_response_time(self):
+        definition = {"url": "https://example.com"}
+        resp = self._mock_response(200)
+        with mock.patch("mutimon.main.requests.request", return_value=resp):
+            items = main.fetch_all_items(definition, {})
+        assert "response_time" in items[0]["http"]
+        assert isinstance(items[0]["http"]["response_time"], float)
+
+    def test_health_check_with_track(self, tmp_mutimon):
+        """Health check integrated with track for up/down state machine."""
+        definition = {"url": "https://example.com"}
+        config = {
+            "email": {
+                "server": {
+                    "host": "smtp.test.com",
+                    "port": 587,
+                    "email": "test@test.com",
+                    "password": "pass",
+                }
+            },
+            "defs": {"health": definition},
+            "rules": [
+                {
+                    "ref": "health",
+                    "name": "test-health",
+                    "schedule": "* * * * *",
+                    "subject": "Site down",
+                    "template": "./templates/test",
+                    "email": "user@test.com",
+                    "input": [
+                        {
+                            "params": {"url": "https://example.com"},
+                            "track": {
+                                "states": [
+                                    {
+                                        "name": "down",
+                                        "test": "({{ http.code }} >= 400) | ({{ http.code }} == 0)",
+                                    },
+                                    {"name": "up", "test": "{{ http.code }} >= 200", "silent": True},
+                                ]
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        template_file = tmp_mutimon / "templates" / "test"
+        template_file.write_text("{% for item in items %}{{ item.url }} is {{ item._state_name }}{% endfor %}")
+
+        resp = self._mock_response(200)
+        with (
+            mock.patch("mutimon.main.requests.request", return_value=resp),
+            mock.patch("mutimon.main.send_email") as mock_send,
+        ):
+            main.process_rule(config, config["rules"][0])
+
+        # First run with status 200 -> "up" state is silent, no email
+        mock_send.assert_not_called()
+
+    def test_health_check_process_rule_no_query(self, tmp_mutimon):
+        """process_rule works when definition has no query."""
+        definition = {"url": "https://{{ url }}"}
+        config = {
+            "email": {
+                "server": {
+                    "host": "smtp.test.com",
+                    "port": 587,
+                    "email": "test@test.com",
+                    "password": "pass",
+                }
+            },
+            "defs": {"health": definition},
+            "rules": [
+                {
+                    "ref": "health",
+                    "name": "test-health",
+                    "schedule": "* * * * *",
+                    "subject": "Health: {{ url }}",
+                    "template": "./templates/test",
+                    "email": "user@test.com",
+                    "params": {"url": "example.com"},
+                }
+            ],
+        }
+        template_file = tmp_mutimon / "templates" / "test"
+        template_file.write_text("{{ http.code }}")
+
+        resp = self._mock_response(200)
+        with (
+            mock.patch("mutimon.main.requests.request", return_value=resp),
+            mock.patch("mutimon.main.send_email") as mock_send,
+        ):
+            main.process_rule(config, config["rules"][0])
+
+        # New item with status 200 — should send email
+        mock_send.assert_called_once()
+
+
+class TestResolveVar:
+    """Tests for nested variable resolution in validators."""
+
+    def test_simple_key(self):
+        item = {"title": "Hello"}
+        assert main._resolve_var(item, "title") == "Hello"
+
+    def test_nested_key(self):
+        item = {"http": {"code": 200}}
+        assert main._resolve_var(item, "http.code") == 200
+
+    def test_deeply_nested(self):
+        item = {"http": {"headers": {"content-type": "text/html"}}}
+        assert main._resolve_var(item, "http.headers.content-type") == "text/html"
+
+    def test_missing_key_returns_empty(self):
+        item = {"http": {"code": 200}}
+        assert main._resolve_var(item, "http.missing") == ""
+
+    def test_missing_top_level_returns_empty(self):
+        item = {"title": "Hello"}
+        assert main._resolve_var(item, "missing") == ""
+
+    def test_non_dict_intermediate_returns_empty(self):
+        item = {"title": "Hello"}
+        assert main._resolve_var(item, "title.sub") == ""
+
+
 class TestMainEntryPoint:
     def test_main_catches_exceptions(self, capsys):
         with mock.patch("mutimon.main.run", side_effect=Exception("boom")):

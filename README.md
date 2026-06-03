@@ -187,8 +187,9 @@ Each definition describes how to fetch and parse data from a website. The option
 | `userAgent` | no | Custom User-Agent header. If omitted, a default browser-like User-Agent is used. Useful for RSS feeds or APIs that require a specific User-Agent. |
 | `params` | no | List of parameter names used in the URL template |
 | `pagination` | no | Pagination config (see below) |
-| `query.type` | yes | `"list"` (multiple items) or `"single"` (one item) |
-| `query.selector` | yes | CSS selector for item container(s). For XML, use XML element names (e.g. `item` for RSS, `entry` for Atom). |
+| `query` | no | When omitted, the definition acts as a [health check](#health-checks) — returns HTTP response metadata instead of parsing content. |
+| `query.type` | yes* | `"list"` (multiple items) or `"single"` (one item). *Required when `query` is present. |
+| `query.selector` | yes* | CSS selector for item container(s). For XML, use XML element names (e.g. `item` for RSS, `entry` for Atom). *Required when `query` is present. |
 | `query.id` | no | How to extract a unique ID per item (see below) |
 | `query.filter` | no | Filter to exclude items (see below) |
 | `query.expect` | no | List of CSS selectors that must exist on the page (see [Expected structure](#expected-structure)). Sends error email if missing. |
@@ -1175,6 +1176,92 @@ In track mode, the following variables are available in templates:
 - **`validator`** — binary filter: include/exclude items. Good for "notify me about new Hacker News posts with score > 100" or "exclude job offers with Angular".
 - **`track`** — state machine: notify on every threshold crossing. Good for "notify me each time ASSECOPOL crosses above 190 zł, and again when it crosses above 200 zł".
 
+## Health checks
+
+Definitions without a `query` section act as health checks. Instead of parsing HTML/XML/JSON, Mutimon makes an HTTP request and returns a single item with response metadata. This is useful for monitoring website uptime.
+
+### HTTP response variables
+
+When `query` is omitted, the returned item has an `http` object with the following fields:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `{{ http.code }}` | int | HTTP status code (0 for connection errors) |
+| `{{ http.method }}` | string | Request method used (GET, HEAD, POST) |
+| `{{ http.body }}` | string | Response body |
+| `{{ http.headers }}` | dict | Response headers (all keys lowercase) |
+| `{{ http.response_time }}` | float | Response time in seconds |
+| `{{ http.error }}` | string/null | Error message on connection failure, null on success |
+
+The item's `id` is set to the requested URL automatically.
+
+### Example: monitor website uptime
+
+Definition (reusable for any URL):
+
+```json
+{
+  "defs": {
+    "health": {
+      "url": "{{ url }}"
+    }
+  }
+}
+```
+
+Rule with `track` for up/down state notifications:
+
+```json
+{
+  "name": "my-sites",
+  "ref": "health",
+  "schedule": "*/15 * * * *",
+  "input": [
+    { "params": { "url": "https://example.com/" } },
+    { "params": { "url": "https://api.example.com/" } }
+  ],
+  "track": [
+    { "name": "down", "test": "({{ http.code }} >= 400) | ({{ http.code }} == 0)" },
+    { "name": "up", "test": "{{ http.code }} >= 200", "silent": true }
+  ],
+  "subject": "Site down: example.com",
+  "template": "./templates/health",
+  "email": "you@example.com"
+}
+```
+
+With `"silent": true` on the "up" state, you only get notified when a site goes down. Remove `"silent"` to also get notified when it recovers.
+
+Example template (`~/.mutimon/templates/health`):
+
+```
+Health check at {{ now }}
+============================================================
+{% for item in items %}
+{{ item.url }}
+  Status: {{ item._state_name }} (HTTP {{ http.code }})
+  Response time: {{ http.response_time }}s{% if http.error %}
+  Error: {{ http.error }}{% endif %}
+{% endfor %}
+```
+
+### Validating headers
+
+Use `match` with a `value` Liquid template to check response headers:
+
+```json
+{
+  "validator": {
+    "match": {
+      "value": "{{ http.headers['content-type'] }}",
+      "regex": "^application/json"
+    }
+  }
+}
+```
+
+Header names are always lowercase in the `http.headers` dict, regardless of how the server returns them.
+
 ## Error handling
 
 The scraper sends error emails for four types of failures. The error email function (`send_error_email`) uses only Python's standard library (no third-party deps), so it works even when the error is caused by a missing dependency.
@@ -1413,6 +1500,15 @@ Or with any AI assistant — just paste the output of `mon --ai-guide` as contex
 > is only in the `<script id="__NEXT_DATA__">` JSON, not in the HTML. Use
 > `parse: "json"` with a JMESPath query to extract city and URL from the
 > embedded JSON.
+> Read the AI guide with `mon --ai-guide` for config format reference.
+
+### Monitor website uptime (health check)
+
+> Add a health check rule to monitor https://example.com and
+> https://api.example.com. Use a definition without `query` to get HTTP
+> response metadata. Use `track` states to notify when a site goes down
+> (status >= 400 or connection error) and stay silent when it's up.
+> Check every 15 minutes.
 > Read the AI guide with `mon --ai-guide` for config format reference.
 
 ### Extract content from complex page structure

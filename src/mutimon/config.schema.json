@@ -119,8 +119,7 @@
   "$defs": {
     "definition": {
       "type": "object",
-      "description": "A scraping definition that describes how to fetch and parse data from a website or API.",
-      "required": ["query"],
+      "description": "A scraping definition that describes how to fetch and parse data from a website or API. When 'query' is omitted, the definition acts as a health check — it fetches the URL and returns HTTP response metadata (code, headers, body) as a single item.",
       "additionalProperties": false,
       "properties": {
         "sources": {
