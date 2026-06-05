@@ -817,6 +817,129 @@ class TestResolveInputs:
         assert result[0]["params"]["feed"] == "a"
         assert result[1]["params"]["feed"] == "b"
 
+    def test_def_validator_used_when_no_input_validator(self):
+        rule = {"params": {"q": "test"}}
+        definition = {"validator": {"test": "{{ score }} > 10"}}
+        result = main.resolve_inputs(rule, definition=definition)
+        assert result[0]["validator"] == {"test": "{{ score }} > 10"}
+
+    def test_def_validator_merged_with_input_validator(self):
+        rule = {
+            "input": {
+                "params": {"q": "x"},
+                "validator": {"match": {"var": "title", "regex": "^Ask"}},
+            }
+        }
+        definition = {"validator": {"test": "{{ score }} > 10"}}
+        result = main.resolve_inputs(rule, definition=definition)
+        v = result[0]["validator"]
+        assert isinstance(v, list)
+        assert len(v) == 2
+        assert v[0] == {"test": "{{ score }} > 10", "require": True}
+        assert v[1] == {"match": {"var": "title", "regex": "^Ask"}}
+
+    def test_def_validator_merged_with_input_array_validator(self):
+        rule = {
+            "input": {
+                "params": {"q": "x"},
+                "validator": [
+                    {"match": {"var": "title", "regex": "^Ask"}},
+                    {"match": {"var": "title", "regex": "^Show"}},
+                ],
+            }
+        }
+        definition = {"validator": {"test": "{{ score }} > 10"}}
+        result = main.resolve_inputs(rule, definition=definition)
+        v = result[0]["validator"]
+        assert isinstance(v, list)
+        assert len(v) == 3
+        assert v[0] == {"test": "{{ score }} > 10", "require": True}
+
+    def test_def_array_validator_merged_with_input(self):
+        definition = {
+            "validator": [
+                {"test": "{{ score }} > 5", "require": True},
+                {"test": "{{ score }} > 10"},
+            ]
+        }
+        rule = {
+            "input": {"params": {"q": "x"}, "validator": {"test": "{{ age }} < 7"}}
+        }
+        result = main.resolve_inputs(rule, definition=definition)
+        v = result[0]["validator"]
+        assert isinstance(v, list)
+        assert len(v) == 3
+        assert v[0] == {"test": "{{ score }} > 5", "require": True}
+        assert v[1] == {"test": "{{ score }} > 10", "require": True}
+        assert v[2] == {"test": "{{ age }} < 7"}
+
+    def test_def_track_used_when_no_input_track(self):
+        rule = {"params": {"url": "https://example.com"}}
+        definition = {
+            "track": {
+                "states": [
+                    {"name": "down", "test": "{{ http.code }} == 0"},
+                    {"name": "up", "test": "{{ http.code }} >= 200"},
+                ]
+            }
+        }
+        result = main.resolve_inputs(rule, definition=definition)
+        assert result[0]["track"] is not None
+        assert result[0]["track"]["states"][0]["name"] == "down"
+
+    def test_input_track_overrides_def_track(self):
+        definition = {
+            "track": {
+                "states": [
+                    {"name": "down", "test": "{{ http.code }} == 0"},
+                    {"name": "up", "test": "{{ http.code }} >= 200"},
+                ]
+            }
+        }
+        rule = {
+            "input": {
+                "params": {"url": "https://example.com"},
+                "track": {
+                    "states": [
+                        {"name": "offline", "test": "{{ http.code }} >= 500"},
+                        {"name": "online", "test": "{{ http.code }} > 0"},
+                    ]
+                },
+            }
+        }
+        result = main.resolve_inputs(rule, definition=definition)
+        assert result[0]["track"]["states"][0]["name"] == "offline"
+
+    def test_def_track_ignored_when_input_has_validator(self):
+        definition = {
+            "track": {
+                "states": [{"name": "up", "test": "{{ http.code }} >= 200"}]
+            }
+        }
+        rule = {
+            "input": {
+                "params": {"q": "x"},
+                "validator": {"test": "{{ score }} > 10"},
+            }
+        }
+        result = main.resolve_inputs(rule, definition=definition)
+        assert result[0]["track"] is None
+        assert result[0]["validator"] is not None
+
+    def test_def_validator_ignored_when_input_has_track(self):
+        definition = {"validator": {"test": "{{ score }} > 10"}}
+        rule = {
+            "input": {
+                "params": {"q": "x"},
+                "track": {
+                    "states": [{"name": "high", "test": "{{ score }} > 100"}]
+                },
+            }
+        }
+        result = main.resolve_inputs(rule, definition=definition)
+        assert result[0]["track"] is not None
+        assert result[0]["validator"] is None
+
 
 # ========================= _replace_each_placeholders =========================
 

@@ -221,6 +221,37 @@ Use `match` with `value` for header checks:
 { "match": { "value": "{{ http.headers['content-type'] }}", "regex": "^application/json" } }
 ```
 
+## Definition-level validator and track
+
+Definitions can include `validator` and/or `track` as defaults for all rules using them.
+
+- **Def `validator`**: AND-merged with input-level validators (def becomes `require: true`). Useful for base filters like freshness:
+  ```json
+  "atom": {
+    "url": "{{feed_url}}",
+    "format": "xml",
+    "query": { ... },
+    "validator": { "test": "{% fresh date 604800 %}" }
+  }
+  ```
+  Rules add their own validators on top — both must pass.
+
+- **Def `track`**: used as default, overridden (not merged) by input-level track:
+  ```json
+  "health": {
+    "url": "{{ url }}",
+    "track": {
+      "states": [
+        { "name": "down", "test": "({{ http.code }} >= 400) | ({{ http.code }} == 0)" },
+        { "name": "up", "test": "{{ http.code }} >= 200", "silent": true }
+      ]
+    }
+  }
+  ```
+  Input entries without their own track use the def's default.
+
+- Track/validator mutual exclusivity applies: input track suppresses def validator, input validator suppresses def track.
+
 ## Tips
 
 - Always add `"expect"` selectors to detect page redesigns

@@ -190,6 +190,8 @@ Each definition describes how to fetch and parse data from a website. The option
 | `query` | no | When omitted, the definition acts as a [health check](#health-checks) — returns HTTP response metadata instead of parsing content. |
 | `query.type` | yes* | `"list"` (multiple items) or `"single"` (one item). *Required when `query` is present. |
 | `query.selector` | yes* | CSS selector for item container(s). For XML, use XML element names (e.g. `item` for RSS, `entry` for Atom). *Required when `query` is present. |
+| `validator` | no | Default validator applied to all rules using this definition. AND-merged with input-level validators (see [Definition-level validator and track](#definition-level-validator-and-track)). |
+| `track` | no | Default track applied to all rules using this definition. Overridden by input-level track (see [Definition-level validator and track](#definition-level-validator-and-track)). |
 | `query.id` | no | How to extract a unique ID per item (see below) |
 | `query.filter` | no | Filter to exclude items (see below) |
 | `query.expect` | no | List of CSS selectors that must exist on the page (see [Expected structure](#expected-structure)). Sends error email if missing. |
@@ -1261,6 +1263,68 @@ Use `match` with a `value` Liquid template to check response headers:
 ```
 
 Header names are always lowercase in the `http.headers` dict, regardless of how the server returns them.
+
+## Definition-level validator and track
+
+Definitions can include a `validator` and/or `track` that act as defaults for all rules referencing that definition. This avoids repeating the same filter across multiple rules or input entries.
+
+### Validator inheritance
+
+A definition-level `validator` is AND-merged with input-level validators. The def validator becomes a `require: true` gate — items must pass it before the input-level validators are considered.
+
+```json
+"defs": {
+  "atom": {
+    "url": "{{feed_url}}",
+    "format": "xml",
+    "query": { ... },
+    "validator": { "test": "{% fresh date 604800 %}" }
+  }
+}
+```
+
+Any rule using the `atom` def automatically filters out items older than 7 days. If a rule adds its own validator (e.g. a title regex), both must pass — freshness AND the title match.
+
+When an input entry has its own `track`, the def-level validator is ignored (since track and validator are mutually exclusive).
+
+### Track inheritance
+
+A definition-level `track` provides a default state machine for all rules. Input-level `track` overrides the def-level track entirely (no merging).
+
+```json
+"defs": {
+  "health": {
+    "url": "{{ url }}",
+    "track": {
+      "states": [
+        { "name": "down", "test": "({{ http.code }} >= 400) | ({{ http.code }} == 0)" },
+        { "name": "up", "test": "{{ http.code }} >= 200", "silent": true }
+      ]
+    }
+  }
+}
+```
+
+Rules using the `health` def get the default up/down tracking. An input entry can override with a custom track (e.g. a CORS proxy that returns 400 normally):
+
+```json
+"input": [
+  { "params": { "url": "https://example.com/" } },
+  {
+    "params": { "url": "https://proxy.example.com/" },
+    "track": {
+      "states": [
+        { "name": "down", "test": "({{ http.code }} >= 500) | ({{ http.code }} == 0)" },
+        { "name": "up", "test": "{{ http.code }} > 0", "silent": true }
+      ]
+    }
+  }
+]
+```
+
+The first entry uses the def's default track. The second overrides it with a custom threshold.
+
+When an input entry has its own `validator`, the def-level track is ignored.
 
 ## Error handling
 

@@ -186,6 +186,61 @@
         },
         "query": {
           "$ref": "#/$defs/query"
+        },
+        "validator": {
+          "description": "Base filter applied to all items from this definition, regardless of which rule uses it. AND-merged with any rule/input-level validator (def validator becomes required). Ignored when the input entry uses 'track'.",
+          "oneOf": [
+            { "$ref": "#/$defs/validator" },
+            { "$ref": "#/$defs/validatorRef" },
+            {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  { "$ref": "#/$defs/validator" },
+                  { "$ref": "#/$defs/validatorRef" }
+                ]
+              },
+              "minItems": 1
+            }
+          ]
+        },
+        "track": {
+          "type": "object",
+          "description": "Default state-machine threshold tracking for this definition. Used when the input entry does not specify its own 'track'. Ignored when the input entry uses 'validator'.",
+          "required": ["states"],
+          "additionalProperties": false,
+          "properties": {
+            "value": {
+              "type": "string",
+              "description": "Liquid expression evaluated and saved as _value for template use.",
+              "examples": ["{{price}}", "{{score}}"]
+            },
+            "states": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["test"],
+                "additionalProperties": false,
+                "properties": {
+                  "test": {
+                    "type": "string",
+                    "description": "numexpr expression with Liquid variables. First matching state wins.",
+                    "examples": ["{{price}} > 200", "{{price}} > 190"]
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Human-friendly label for this state, available in templates as {{ item._state_name }}."
+                  },
+                  "silent": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "If true, transitioning to this state saves state but does not trigger notification."
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },

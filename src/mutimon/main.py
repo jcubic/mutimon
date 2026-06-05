@@ -2022,11 +2022,50 @@ def expand_input_each(input_spec):
     return entries
 
 
-def resolve_inputs(rule, validators_defs=None):
+def _merge_def_validator(def_validator, input_validator):
+    """
+    Merge a definition-level validator with an input-level validator.
+
+    The def validator is treated as a required base filter (AND with input).
+    Returns the merged validator or whichever one is present.
+    """
+    if not def_validator:
+        return input_validator
+    if not input_validator:
+        return def_validator
+
+    # Normalize both to lists
+    if isinstance(def_validator, dict):
+        def_list = [def_validator]
+    else:
+        def_list = list(def_validator)
+
+    if isinstance(input_validator, dict):
+        input_list = [input_validator]
+    else:
+        input_list = list(input_validator)
+
+    # Mark all def validators as required (AND with input)
+    merged = []
+    for v in def_list:
+        entry = dict(v)
+        entry["require"] = True
+        merged.append(entry)
+    merged.extend(input_list)
+    return merged
+
+
+def resolve_inputs(rule, validators_defs=None, definition=None):
     """
     Resolve the input entries for a rule.
 
     Returns a list of {params, validator, track} dicts.
+
+    When a definition is provided, its validator and track are merged:
+      - def validator: AND-merged with input validator (as required base filter)
+      - def track: used as default, overridden by input-level track
+      - track and validator are mutually exclusive: input-level track
+        suppresses def validator, input-level validator suppresses def track
 
     Supports:
       - No 'input' field: uses rule's 'params' directly, no validator/track
@@ -2040,14 +2079,32 @@ def resolve_inputs(rule, validators_defs=None):
     """
     if validators_defs is None:
         validators_defs = {}
+
+    def_validator = None
+    def_track = None
+    if definition:
+        def_validator = resolve_validator(
+            definition.get("validator"), validators_defs
+        )
+        def_track = definition.get("track")
+
     input_spec = rule.get("input")
     if input_spec is None:
         params = rule.get("params", {})
         if isinstance(params, list):
             return [
-                {"params": p, "validator": None, "track": None} for p in params
+                {
+                    "params": p,
+                    "validator": def_validator if not def_track else None,
+                    "track": def_track if not def_validator else None,
+                }
+                for p in params
             ]
-        return [{"params": params, "validator": None, "track": None}]
+        return [{
+            "params": params,
+            "validator": def_validator if not def_track else None,
+            "track": def_track if not def_validator else None,
+        }]
     if isinstance(input_spec, dict):
         if "each" in input_spec:
             input_spec = expand_input_each(input_spec)
@@ -2055,8 +2112,20 @@ def resolve_inputs(rule, validators_defs=None):
             input_spec = [input_spec]
     results = []
     for entry in input_spec:
-        validator = resolve_validator(entry.get("validator"), validators_defs)
-        track = entry.get("track")
+        input_validator = resolve_validator(entry.get("validator"), validators_defs)
+        input_track = entry.get("track")
+        # Track and validator are mutually exclusive:
+        # input track suppresses def validator, input validator suppresses def track
+        if input_track:
+            track = input_track
+            validator = None
+        elif input_validator:
+            track = None
+            validator = _merge_def_validator(def_validator, input_validator)
+        else:
+            # No input-level override — use def-level
+            track = def_track
+            validator = def_validator if not def_track else None
         params = entry.get("params")
         if params is None:
             params = rule.get("params", {})
@@ -2087,7 +2156,7 @@ def process_rule(config, rule, save_only=False, init=False):
 
     # Resolve inputs (multiple pages with different params + validators)
     validators_defs = config.get("defs", {}).get("validators", {})
-    inputs = resolve_inputs(rule, validators_defs)
+    inputs = resolve_inputs(rule, validators_defs, definition=definition)
     all_items = []
     input_groups = []
     flatten = rule.get("flatten", True)
@@ -2582,7 +2651,7 @@ def run():
                 print(f"Error: Definition '{ref}' not found", file=sys.stderr)
                 continue
             info(f"[DRY RUN] Rule: '{rule_name}'")
-            inputs = resolve_inputs(rule)
+            inputs = resolve_inputs(rule, definition=definition)
             all_items = []
             for input_entry in inputs:
                 params = input_entry["params"]
