@@ -1,6 +1,7 @@
 ## 0.5.0
 * expose `http` data as variable
 * allow using validators and track in definitions
+* add `dedupe` field to remove duplicated entries from the list
 
 ## 0.4.0
 * add `flatten` prop to control processing multiple pages in one rule

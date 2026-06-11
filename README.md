@@ -226,6 +226,7 @@ Each rule references a definition and can override params, email recipient, temp
 | `params` | no | Values for the definition's URL template variables. Used when `input` is not specified. |
 | `input` | no | One or more input entries with params and optional validators (see [Multiple inputs](#multiple-inputs)). Overrides `params`. |
 | `flatten` | no | When `true` (default), items from all inputs are merged into a flat list. When `false`, `items` is a nested list grouped by input entry (see [Grouped items](#grouped-items-flatten)). |
+| `dedupe` | no | Array of variable names to use as a composite dedup key. Items with identical values for all listed fields are collapsed (first occurrence kept). See [Field-based deduplication](#field-based-deduplication). |
 | `enabled` | no | Set to `false` to disable a rule without removing it from the config. Disabled rules are skipped on every run. Default `true`. |
 | `log` | no | When `true`, write per-run debug logs to `~/.mutimon/logs/<rule_name>.log` with timestamps, item counts, notification decisions, and returning-ID detection. |
 
@@ -540,6 +541,23 @@ Reads the `id` attribute directly from the matched element (e.g. `<tr id="474159
 ### Fallback
 
 If no `id` spec is provided, the `url` variable is used as the identity. If there's no `url` either, a hash of all variables is used.
+
+### Field-based deduplication
+
+Sometimes the same listing appears multiple times with different IDs (e.g. a job offer posted under multiple categories gets a different URL slug for each). Use `dedupe` on the rule to collapse these based on extracted field values:
+
+```json
+{
+  "ref": "job-site",
+  "name": "jobs",
+  "dedupe": ["title", "company"],
+  "subject": "{{count}} new offer(s)",
+  "template": "./templates/jobs",
+  "email": "you@example.com"
+}
+```
+
+Items with identical values for **all** listed fields are collapsed — only the first occurrence is kept. This runs after ID-based deduplication and before state comparison.
 
 ## Filtering
 

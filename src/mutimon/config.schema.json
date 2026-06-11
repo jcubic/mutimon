@@ -650,6 +650,15 @@
             [{ "website_id": "abc", "site_name": "Site A" }, { "website_id": "def", "site_name": "Site B" }]
           ]
         },
+        "dedupe": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "List of variable names to use as a composite dedup key. Items with identical values for all listed fields are collapsed (first occurrence kept). Useful when the same listing appears with different IDs (e.g. job postings tagged under multiple categories).",
+          "examples": [
+            ["title", "company"]
+          ]
+        },
          "input": {
            "description": "One or more input entries, each with its own params and optional validator. Use this to scrape multiple pages of the same type (e.g. multiple stock symbols) into a single rule. Can be a single object, an array, or an object with 'each' for expansion. If omitted, 'params' is used directly.",
            "oneOf": [

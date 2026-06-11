@@ -2245,6 +2245,21 @@ def process_rule(config, rule, save_only=False, init=False):
             log(f"  Deduplicated: {len(all_items)} → {len(unique_items)} item(s)")
         all_items = unique_items
 
+    dedupe_fields = rule.get("dedupe")
+    if dedupe_fields:
+        seen_keys = set()
+        unique_items = []
+        for item in all_items:
+            key = tuple(str(item.get(f, "")) for f in dedupe_fields)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            unique_items.append(item)
+        if len(unique_items) < len(all_items):
+            log(f"  Deduplicated by {dedupe_fields}: "
+                f"{len(all_items)} → {len(unique_items)} item(s)")
+        all_items = unique_items
+
     log(f"  Found {len(all_items)} item(s) total.")
 
     if not all_items:

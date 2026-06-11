@@ -58,6 +58,7 @@ A generic, config-driven web scraper that monitors websites for changes and send
 8. `parse: "json"` + `query` (JMESPath) — extracts structured data from embedded JSON. Variables are processed AFTER HTML extraction and ID assignment (so `{{id}}` is available in `query.path`). Parsed JSON is cached per page via module-level `_json_cache` keyed by `(id(soup), selector)`, cleared at start of each `parse_items()` call.
 9. Health checks — definitions without `query` act as health checks. Returns a single item with `http.code`, `http.method`, `http.body`, `http.headers` (dict, lowercase keys), `http.response_time`, `http.error`. Connection errors produce `code: 0`. Combine with `track` for up/down notifications. The `var` field in `match` validators supports dot-separated paths for nested access (e.g. `http.headers.content-type`).
 10. Def-level `validator` and `track` — definitions can include `validator` (AND-merged with input-level validators via `_merge_def_validator()`, def validators become `require: True`) and `track` (used as default, overridden by input-level track). Track/validator mutual exclusivity applies: input track suppresses def validator, input validator suppresses def track. Resolved in `resolve_inputs()`.
+11. `dedupe` — optional array of variable names on a rule. Items with identical values for all listed fields are collapsed (first kept). Runs after ID-based dedup, before state comparison. Useful when the same listing appears with different IDs (e.g. job offers tagged under multiple categories).
 
 ## How to add a new page to scrape
 

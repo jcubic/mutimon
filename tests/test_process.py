@@ -370,6 +370,88 @@ class TestProcessRule:
         state = main.load_state("test-dedup")
         assert len(state) == 1  # Deduped
 
+    def test_dedupe_by_fields(self, tmp_mutimon):
+        """dedupe option removes items with same field combination."""
+        config = self._make_config(tmp_mutimon)
+        rule = {
+            "ref": "test-site",
+            "name": "test-dedupe-fields",
+            "subject": "New: {{count}}",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "dedupe": ["title"],
+        }
+        html = """
+        <html><body>
+        <div class="item" data-id="1"><h3>Same Title</h3></div>
+        <div class="item" data-id="2"><h3>Same Title</h3></div>
+        <div class="item" data-id="3"><h3>Different</h3></div>
+        </body></html>
+        """
+        with self._mock_fetch(html):
+            with mock.patch("mutimon.main.send_email") as mock_send:
+                main.process_rule(config, rule)
+                mock_send.assert_called_once()
+
+        state = main.load_state("test-dedupe-fields")
+        assert len(state) == 2
+        titles = [s["title"] for s in state]
+        assert "Same Title" in titles
+        assert "Different" in titles
+
+    def test_dedupe_by_multiple_fields(self, tmp_mutimon):
+        """dedupe with multiple fields uses composite key."""
+        config = self._make_config(tmp_mutimon)
+        # Add company variable to the definition
+        config["defs"]["test-site"]["query"]["variables"]["company"] = {
+            "selector": "span.company",
+            "value": {"type": "text"},
+        }
+        rule = {
+            "ref": "test-site",
+            "name": "test-dedupe-multi",
+            "subject": "New: {{count}}",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "dedupe": ["title", "company"],
+        }
+        html = """
+        <html><body>
+        <div class="item" data-id="1"><h3>Dev</h3><span class="company">Acme</span></div>
+        <div class="item" data-id="2"><h3>Dev</h3><span class="company">Acme</span></div>
+        <div class="item" data-id="3"><h3>Dev</h3><span class="company">Other</span></div>
+        </body></html>
+        """
+        with self._mock_fetch(html):
+            with mock.patch("mutimon.main.send_email"):
+                main.process_rule(config, rule)
+
+        state = main.load_state("test-dedupe-multi")
+        assert len(state) == 2
+
+    def test_dedupe_not_set_keeps_all(self, tmp_mutimon):
+        """Without dedupe, items with same fields but different IDs are kept."""
+        config = self._make_config(tmp_mutimon)
+        rule = {
+            "ref": "test-site",
+            "name": "test-no-dedupe",
+            "subject": "New: {{count}}",
+            "template": "./templates/test",
+            "email": "user@test.com",
+        }
+        html = """
+        <html><body>
+        <div class="item" data-id="1"><h3>Same</h3></div>
+        <div class="item" data-id="2"><h3>Same</h3></div>
+        </body></html>
+        """
+        with self._mock_fetch(html):
+            with mock.patch("mutimon.main.send_email"):
+                main.process_rule(config, rule)
+
+        state = main.load_state("test-no-dedupe")
+        assert len(state) == 2
+
 
 # ========================= init mode =========================
 
