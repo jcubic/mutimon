@@ -149,7 +149,7 @@ try:
     from liquid import Tag as LiquidTag
     from liquid.ast import Node as LiquidNode
     from liquid.token import TOKEN_TAG, TOKEN_EXPRESSION
-    import numexpr
+    from expression import Expression
     from babel import Locale
     from babel.numbers import parse_decimal
     from croniter import croniter
@@ -1798,30 +1798,34 @@ def evaluate_single_validator(validator, item):
 
     The validator is a dict with optional keys (AND logic — all must pass):
 
-      "test": numexpr expression with Liquid variables, e.g.:
+      "test": expression-py expression with Liquid variables, e.g.:
           "{{ price }} > 9.5"
-          "({{ price }} > 80) & ({{ change_pct }} < 0)"
+          "title =~ /^Ask HN/"
+          "skills & ['AI', 'ML']"
 
-      "match": regex match against a rendered variable, e.g.:
-          {"value": "{{ title }}", "regex": "^Ask HN"}
+      "match": regex match against a rendered variable (deprecated for regex,
+          use 'test' with =~ instead; include/exclude still supported), e.g.:
+          {"var": "skills", "include": ["AI", "ML"]}
 
     Returns True if all specified conditions pass, False otherwise.
     """
-    # Evaluate "test" condition (numexpr expression)
+    # Evaluate "test" condition (expression-py expression)
     test_expr = validator.get("test")
     if test_expr:
         try:
             rendered = liquid.from_string(test_expr).render(**item).strip()
-            if not rendered or not (rendered[0].isdigit() or rendered[0] in "(-"):
-                vars_in_expr = re.findall(r"\{\{\s*(\w+)\s*\}\}", test_expr)
-                missing = [v for v in vars_in_expr if v not in item]
+            vars_in_expr = re.findall(r"\{\{\s*(\w+)\s*\}\}", test_expr)
+            missing = [v for v in vars_in_expr if v not in item]
+            if missing:
                 raise UndefinedVariableError(
                     f"Undefined variable(s) in validator test: "
                     f"{', '.join(missing)}. "
                     f"Expression: '{test_expr}', "
                     f"available: {sorted(item.keys())}"
                 )
-            if not bool(numexpr.evaluate(rendered)):
+            expr = Expression()
+            expr.variables = dict(item)
+            if not bool(expr.evaluate(rendered)):
                 return False
         except UndefinedVariableError:
             raise
@@ -1936,7 +1940,9 @@ def evaluate_track(track, item):
     for i, state in enumerate(track["states"]):
         try:
             rendered = liquid.from_string(state["test"]).render(**item)
-            if bool(numexpr.evaluate(rendered)):
+            expr = Expression()
+            expr.variables = dict(item)
+            if bool(expr.evaluate(rendered)):
                 result["_state"] = i
                 result["_state_name"] = state.get("name", state["test"])
                 result["_silent"] = state.get("silent", False)

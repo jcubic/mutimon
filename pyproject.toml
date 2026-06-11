@@ -29,7 +29,7 @@ dependencies = [
     "lxml",
     "python-liquid",
     "croniter",
-    "numexpr",
+    "expression-py",
     "jsonschema",
     "babel",
     "jmespath",
