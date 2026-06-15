@@ -225,8 +225,8 @@
                 "properties": {
                   "test": {
                     "type": "string",
-                    "description": "numexpr expression with Liquid variables. First matching state wins.",
-                    "examples": ["{{price}} > 200", "{{price}} > 190"]
+                    "description": "expression-py expression (item vars available as bare names; Liquid placeholders also work). First matching state wins.",
+                    "examples": ["price > 200", "price > 190", "title =~ /WikiZEIT/"]
                   },
                   "name": {
                     "type": "string",
@@ -561,7 +561,7 @@
     "rule": {
       "type": "object",
       "description": "A rule that combines a scraping definition with scheduling, email delivery, and template rendering. Each rule produces a separate email notification when new items are detected.",
-      "required": ["ref", "name", "subject", "template", "email"],
+      "required": ["name", "subject", "template", "email"],
       "additionalProperties": false,
       "properties": {
         "enabled": {
@@ -576,7 +576,7 @@
         },
         "ref": {
           "type": "string",
-          "description": "Name of a definition in the 'defs' object to use for scraping.",
+          "description": "Default definition name from 'defs'. Optional when every 'input' entry specifies its own 'ref' (aggregated rule combining multiple sources into one email).",
           "examples": ["useme", "hackernews"]
         },
         "name": {
@@ -675,9 +675,19 @@
      },
     "inputEntry": {
       "type": "object",
-      "description": "A single input entry that provides parameters for one page fetch and an optional validator to filter results.",
+      "description": "A single input entry that provides parameters for one page fetch and an optional validator to filter results. May override the rule's 'ref' to fetch from a different definition (aggregation pattern).",
       "additionalProperties": false,
       "properties": {
+        "ref": {
+          "type": "string",
+          "description": "Optional definition name overriding the rule's default 'ref'. Use to aggregate multiple sources (different defs) into one email.",
+          "examples": ["justjoin", "pracuj"]
+        },
+        "label": {
+          "type": "string",
+          "description": "Optional human-friendly source label. Available in templates as item._label. Useful for grouping aggregated items by source.",
+          "examples": ["justjoin.it", "pracuj.pl"]
+        },
         "params": {
           "type": "object",
           "description": "Parameter values for this input's URL. Overrides the rule-level 'params'. Also merged into extracted items so they're available in templates.",
@@ -727,8 +737,8 @@
                 "properties": {
                   "test": {
                     "type": "string",
-                    "description": "numexpr expression with Liquid variables. First matching state wins.",
-                    "examples": ["{{price}} > 200", "{{price}} > 190"]
+                    "description": "expression-py expression (item vars available as bare names; Liquid placeholders also work). First matching state wins.",
+                    "examples": ["price > 200", "price > 190", "title =~ /WikiZEIT/"]
                   },
                   "name": {
                     "type": "string",
@@ -825,7 +835,11 @@
     },
     "validator": {
       "type": "object",
-      "description": "Validates extracted items. Each validator must contain exactly one condition type: either 'test' or 'match', not both. In an array of validators, those with 'require: true' must ALL pass (AND logic), and at least one non-required validator must also pass (OR logic).",
+      "description": "Validates extracted items. Contains 'test' (expression-py expression), 'match' (list-membership conditions), or both (AND logic). In an array of validators, those with 'require: true' must ALL pass (AND logic), and at least one non-required validator must also pass (OR logic).",
+      "anyOf": [
+        { "required": ["test"] },
+        { "required": ["match"] }
+      ],
       "properties": {
         "require": {
           "type": "boolean",
@@ -834,16 +848,18 @@
         },
         "test": {
           "type": "string",
-          "description": "A numexpr expression with Liquid variable placeholders. Variables with 'parse: number' are available as floats. The expression must evaluate to true for the item to be included. Use & for AND, | for OR, and parentheses for grouping. Liquid filters are available, e.g. {{ date | date: \"%Y%m%d\" }} or {{ \"now\" | date: \"%u\" }}.",
+          "description": "An expression-py expression with Liquid variable placeholders. Supports arithmetic, comparison, =~ regex match (with capture groups $1..$9), array operators (& union, | intersection, in membership), and Liquid filters. Variables with 'parse: number' are available as floats; lists via 'var' lookup are available as arrays.",
           "examples": [
             "{{price}} > 9.5",
-            "{{price}} > 10",
-            "({{price}} > 80) & ({{change_pct}} < 0)",
+            "price > 10",
+            "title =~ /^Ask HN/",
+            "(price > 80) && (change_pct < 0)",
+            "skills & [\"AI\", \"ML\"]",
             "{{ date | date: \"%Y%m%d\" }} == {{ \"now\" | date: \"%Y%m%d\" }}"
           ]
         },
         "match": {
-          "description": "Regex match condition(s). A single match object or an array of match objects (AND logic — all must pass).",
+          "description": "List-membership condition(s). A single match object or an array of match objects (AND logic — all must pass). For regex matching, prefer 'test' with =~ operator.",
           "oneOf": [
             { "$ref": "#/$defs/matchCondition" },
             {
@@ -853,11 +869,7 @@
             }
           ]
         }
-      },
-      "oneOf": [
-        { "required": ["test"], "not": { "required": ["match"] } },
-        { "required": ["match"], "not": { "required": ["test"] } }
-      ]
+      }
     },
     "matchCondition": {
       "type": "object",

@@ -42,23 +42,26 @@ A generic, config-driven web scraper that monitors websites for changes and send
 2. `rules` — reference a def, add schedule (cron expr), email template, recipient
 3. `input` — optional array on a rule for scraping multiple pages with different params (e.g. multiple stock symbols)
 4. `validator` — optional filter on each input entry, object or array:
-   - `{"test": "{{price}} > 10"}` — numexpr expression
-   - `{"match": {"var": "title", "regex": "^Ask HN"}}` — regex match
-   - `{"match": {"var": "skills", "include": ["Linux"]}}` — include items where list contains any listed string (exact element match)
-   - `{"match": {"var": "skills", "exclude": ["Angular", "C#"]}}` — exclude items where list contains any listed string
+   - `{"test": "price > 10"}` — expression-py expression (item vars available as bare names; `{{ ... }}` Liquid placeholders also work for filters/commands)
+   - `{"test": "title =~ /^Ask HN/"}` — regex match via `=~`; capture groups in `$1..$9`. Negation: `!(title =~ /Junior/)`. Case-insensitive: `/wikipedia/i`
+   - `{"test": "skills & ['AI', 'ML']"}` — array intersection (empty array is falsy); replaces list-valued `match.include`
+   - `{"test": "skills & ['Angular'] == []"}` — exclusion (no intersection); replaces list-valued `match.exclude`
+   - `{"match": {"var": "skills", "include": ["Linux"]}}` — kept for string/list whitelist semantics
+   - `{"match": {"var": "skills", "exclude": ["Angular", "C#"]}}` — kept for string/list blacklist semantics
+   - `match.regex` is **deprecated** — use `test` with `=~` instead. Still supported for backward compat, validation emits a warning.
    - `var` — direct variable lookup (preserves lists); `value` — Liquid template (always string); use one or the other
    - `{"@id": "name"}` — reference to a reusable validator defined in `defs.validators`
 5. `defs.validators` — reusable validators referenced by `{"@id": "name"}` in rules, avoids duplication across rules
    - Array of validators = OR logic (any passes)
    - `require: true` on a validator makes it mandatory (AND with others); remaining validators still OR-combine
-   - Object with both test+match = AND logic
-   - `match.exist: false` passes when pattern does NOT match (useful for detecting something disappearing from a page)
+   - Object with both `test` + `match` = AND logic
 6. Threshold crossing — all fetched items are saved with a `_valid` flag. When an item passes a validator after previously failing (or vice versa), it triggers a re-notification. Enables alerts like "price went back above $75k after dipping".
 7. `track` — state-machine threshold tracking (alternative to `validator`, mutually exclusive). Evaluates states top-down (first match wins), saves state index, notifies on every state transition. States can be `"silent": true` to save state without notifying. Template vars: `{{ item._state_name }}`, `{{ item._prev_state_name }}`, `{{ item._value }}`.
 8. `parse: "json"` + `query` (JMESPath) — extracts structured data from embedded JSON. Variables are processed AFTER HTML extraction and ID assignment (so `{{id}}` is available in `query.path`). Parsed JSON is cached per page via module-level `_json_cache` keyed by `(id(soup), selector)`, cleared at start of each `parse_items()` call.
 9. Health checks — definitions without `query` act as health checks. Returns a single item with `http.code`, `http.method`, `http.body`, `http.headers` (dict, lowercase keys), `http.response_time`, `http.error`. Connection errors produce `code: 0`. Combine with `track` for up/down notifications. The `var` field in `match` validators supports dot-separated paths for nested access (e.g. `http.headers.content-type`).
 10. Def-level `validator` and `track` — definitions can include `validator` (AND-merged with input-level validators via `_merge_def_validator()`, def validators become `require: True`) and `track` (used as default, overridden by input-level track). Track/validator mutual exclusivity applies: input track suppresses def validator, input validator suppresses def track. Resolved in `resolve_inputs()`.
 11. `dedupe` — optional array of variable names on a rule. Items with identical values for all listed fields are collapsed (first kept). Runs after ID-based dedup, before state comparison. Useful when the same listing appears with different IDs (e.g. job offers tagged under multiple categories).
+12. **Aggregated rules** — combine multiple sources (defs) into one email. Each `input` entry can have its own `ref` (overrides rule-level `ref`) and `label` (friendly name available as `item._label`). With `flatten: false`, the template gets groups (one per input) and empty groups are filtered out. IDs are namespaced as `<ref>:<id>` to prevent cross-source collisions. `dedupe` applies across all sources, so the same listing appearing on multiple sites is collapsed.
 
 ## How to add a new page to scrape
 
@@ -112,7 +115,7 @@ A generic, config-driven web scraper that monitors websites for changes and send
 
 ## Dependencies
 
-Python 3.12+ with: `requests`, `beautifulsoup4`, `lxml`, `python-liquid`, `croniter`, `numexpr`, `jsonschema`, `babel`, `jmespath`
+Python 3.12+ with: `requests`, `beautifulsoup4`, `lxml`, `python-liquid`, `croniter`, `expression-py`, `jsonschema`, `babel`, `jmespath`
 
 Install via `pip install .` or `pip install -e .` for development.
 

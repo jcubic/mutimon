@@ -217,7 +217,7 @@ Each rule references a definition and can override params, email recipient, temp
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `ref` | yes | Name of the definition in `defs` |
+| `ref` | conditional | Name of the definition in `defs`. Optional when every `input` entry specifies its own `ref` (aggregation pattern, see [Aggregating multiple sources](#aggregating-multiple-sources-into-one-email-ref-per-input)). |
 | `name` | yes | Unique rule name. Used for state file (`~/.mutimon/data/<name>`) |
 | `schedule` | no | Cron expression or array of expressions (see [Schedule](#schedule)). If omitted, runs every time. |
 | `subject` | yes | Liquid template for the email subject line |
@@ -701,17 +701,69 @@ Each item in grouped mode gets additional metadata:
 
 When `flatten` is `true` (default) or there is only one input entry, the template works as usual with a flat `items` list.
 
+Empty groups are automatically filtered out — if an input produces zero items, it won't appear in the template.
+
+### Aggregating multiple sources into one email (`ref` per input)
+
+To combine results from different definitions into a single email, give each `input` entry its own `ref` (overriding the rule's default) plus an optional friendly `label`. Each item gets `_label` for use in the template.
+
+```json
+{
+  "name": "python-jobs",
+  "schedule": "0 9 * * *",
+  "subject": "[Jobs] {{count}} new Python offer(s)",
+  "template": "./templates/jobs-aggregated",
+  "email": "you@example.com",
+  "flatten": false,
+  "dedupe": ["title", "company"],
+  "input": [
+    {
+      "ref": "justjoin",
+      "label": "justjoin.it",
+      "params": {"keyword": "Python"},
+      "validator": {"@id": "job-board-python"}
+    },
+    {
+      "ref": "pracuj",
+      "label": "pracuj.pl",
+      "params": {"url": "https://..."}
+    },
+    {
+      "ref": "nofluffjobs",
+      "label": "nofluffjobs.com",
+      "params": {"language": "Python"},
+      "validator": {"@id": "job-board-python"}
+    }
+  ]
+}
+```
+
+Template using `_label`:
+
+```liquid
+{% for group in items %}
+=== {{ group[0]._label }} ({{ group.size }}) ===
+{% for item in group %}
+{{ forloop.index }}. {{ item.title }} — {{ item.company }}
+{% endfor %}
+{% endfor %}
+```
+
+When inputs use different `ref`s, IDs are automatically namespaced as `<ref>:<id>` to prevent state collisions. `dedupe` still applies across all sources, so the same listing appearing on multiple sites is collapsed.
+
+The rule's top-level `ref` becomes optional in this mode — either provide it as a fallback default, or omit it and require every input to specify its own.
+
 ## Validators
 
 Each input entry can have a `validator` object that filters extracted items. The validator supports two condition types. If both are present, both must pass (AND logic).
 
-### `test` -- Numeric expression
+### `test` -- Expression
 
-A [numexpr](https://numexpr.readthedocs.io/) expression with Liquid variable placeholders. Variables should use `"parse": "number"` or `"parse": "money"` in the definition so they're available as floats.
+A general-purpose expression evaluated by [expression-py](https://github.com/jcubic/expression.py). Supports arithmetic, comparisons, regex matching with `=~`, boolean operators, array operations, and Liquid variable placeholders. Item variables are available directly by name (no `{{ }}` needed); use Liquid placeholders only when you need a Liquid filter or custom command.
 
 ```json
 "validator": {
-  "test": "{{price}} > 9.5"
+  "test": "price > 9.5"
 }
 ```
 
@@ -719,54 +771,27 @@ Supported operations:
 
 | Operator | Example |
 |----------|---------|
-| Comparison | `{{price}} > 10`, `{{change_pct}} <= -5` |
-| AND | `({{price}} > 10) & ({{change_pct}} < 0)` |
-| OR | `({{price}} < 5) \| ({{price}} > 100)` |
-| Arithmetic | `{{price}} * {{quantity}} > 1000` |
-| Functions | `abs({{change_pct}}) > 3` |
+| Comparison | `price > 10`, `change_pct <= -5` |
+| AND / OR | `(price > 80) && (change_pct < 0)`, `(price < 5) \|\| (price > 100)` |
+| Arithmetic | `price * quantity > 1000` |
+| Regex match | `title =~ /^Ask HN/`, `title =~ /wikipedia/i` |
+| Capture groups | After `title =~ /Senior (.+)/`, `$1` holds the first group |
+| Array membership | `"Python" in skills`, `skills & ["AI", "ML"]` |
+| Array equality | `skills & ["Angular", "Java"] == []` (none of these match) |
+| Null check | `salary_from != null` |
 
-Use parentheses to group compound expressions. See the [numexpr documentation](https://numexpr.readthedocs.io/) for the full list of supported operations.
+Empty arrays are falsy, so `skills & ["AI", "ML"]` directly evaluates to true/false: true if `skills` contains "AI" or "ML", false otherwise. See [expression-py docs](https://github.com/jcubic/expression.py) for the full operator list and precedence.
 
-### `match` -- Regex match
-
-Matches a variable value against a regex pattern. Uses `re.search()` so the pattern matches anywhere unless anchored with `^` or `$`.
-
-```json
-"validator": {
-  "match": {
-    "var": "title",
-    "regex": "^Ask HN"
-  }
-}
-```
-
-**Match condition fields:**
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `var` | one of `var` or `value` | Direct variable name — returns the raw value, preserving lists from `collect: true` |
-| `value` | one of `var` or `value` | Liquid template string rendered against item variables (always produces a string) |
-| `regex` | one of `regex`, `include`, or `exclude` | Regex pattern tested with `re.search()` (matches anywhere unless anchored). For list values, elements are joined with `", "` before matching. |
-| `include` | one of `regex`, `include`, or `exclude` | Array of strings — passes if any string is found (see below) |
-| `exclude` | one of `regex`, `include`, or `exclude` | Array of strings — passes if none are found (see below) |
-| `strict` | no | When `true`, `include`/`exclude` use exact string equality instead of substring match. Only affects string values — list values always use exact element matching. Default `false`. |
-| `exist` | no | Whether the regex pattern should exist. Default `true`. Set to `false` to pass when the regex does NOT match. Not needed with `exclude`. |
-
-Set `"exist": false` to pass when the pattern is **not found**. This is useful for detecting when something disappears from a page:
+You can still use `{{ }}` placeholders when you need Liquid pre-processing (e.g. filters or custom commands):
 
 ```json
-"validator": {
-  "match": {
-    "var": "status",
-    "regex": "Coming soon",
-    "exist": false
-  }
-}
+{ "test": "{{ date | date: \"%Y%m%d\" }} == {{ \"now\" | date: \"%Y%m%d\" }}" }
+{ "test": "{% fresh date 604800 %}" }
 ```
 
-### `include` / `exclude` -- String list match
+### `match` -- List membership match
 
-Use `include` or `exclude` instead of `regex` when checking against a list of plain strings. Use `var` to reference the variable directly — when the variable is a list (from `collect: true`), each element is compared as an exact match, so `"Java"` will match the skill `"Java"` but not `"JavaScript"`. For plain string values, substring matching is used by default (use `strict: true` for exact matching).
+Checks whether a variable's value is in (or not in) a list of strings. For regex matching, use `test` with the `=~` operator instead.
 
 ```json
 "validator": {
@@ -777,13 +802,25 @@ Use `include` or `exclude` instead of `regex` when checking against a list of pl
 }
 ```
 
+**Match condition fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `var` | one of `var` or `value` | Direct variable name — returns the raw value, preserving lists from `collect: true` |
+| `value` | one of `var` or `value` | Liquid template string rendered against item variables (always produces a string) |
+| `include` | one of `include` or `exclude` | Array of strings — passes if any string is found (see below) |
+| `exclude` | one of `include` or `exclude` | Array of strings — passes if none are found (see below) |
+| `strict` | no | When `true`, `include`/`exclude` use exact string equality instead of substring match. Only affects string values — list values always use exact element matching. Default `false`. |
+
+When the variable is a list (from `collect: true`), each element is compared as an exact match — `"Java"` matches the skill `"Java"` but not `"JavaScript"`. For plain string values, substring matching is used by default; set `strict: true` for exact equality.
+
 `match` can also be an array of match objects (AND logic — all must pass):
 
 ```json
 "validator": {
   "match": [
-    { "var": "platform", "regex": "Linux" },
-    { "var": "status", "regex": "Coming soon", "exist": false }
+    { "var": "skills", "include": ["Python"] },
+    { "var": "skills", "exclude": ["Angular", "C#"] }
   ]
 }
 ```
@@ -794,10 +831,10 @@ Both conditions must pass (AND logic within a single object):
 
 ```json
 "validator": {
-  "test": "{{price}} > 80",
+  "test": "price > 80 && company =~ /Asseco/",
   "match": {
-    "var": "company",
-    "regex": "Asseco"
+    "var": "skills",
+    "exclude": ["Java", "C#"]
   }
 }
 ```
@@ -864,7 +901,7 @@ Then reference it in rules:
 ```json
 "validator": [
   {"@id": "job-board"},
-  { "require": true, "match": { "var": "salary", "regex": "Undisclosed", "exist": false } }
+  { "require": true, "test": "!(salary =~ /Undisclosed/)" }
 ]
 ```
 
@@ -1146,7 +1183,7 @@ For more granular threshold monitoring, use `track` instead of `validator` on an
 |-------|----------|-------------|
 | `value` | no | Liquid expression to evaluate and save as `_value` for templates. |
 | `states` | yes | Array of state definitions, evaluated top-down. First matching state wins. |
-| `states[].test` | yes | numexpr expression with Liquid variables. |
+| `states[].test` | yes | expression-py expression with optional Liquid variables. |
 | `states[].name` | no | Human-friendly label, available as `{{ item._state_name }}` in templates. Defaults to the `test` expression. |
 | `states[].silent` | no | If `true`, transitioning to this state saves state but does not trigger a notification. Default `false`. |
 
@@ -1473,7 +1510,7 @@ Monitors multiple subreddits for posts about hiring Python or JavaScript develop
 "validators": {
   "reddit-hiring": [
     { "test": "{% fresh date 604800 %}", "require": true },
-    { "match": { "var": "title", "regex": "(?i)\\b(hiring|hire|looking for)\\b.*(Python|JavaScript)" } }
+    { "test": "title =~ /\\b(hiring|hire|looking for)\\b.*(Python|JavaScript)/i" }
   ]
 }
 ```

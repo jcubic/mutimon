@@ -211,7 +211,7 @@ class TestExtractVariablesWithFind:
             }
         }
         data = main.extract_variables(el, variables)
-        assert data["content"] == "DescriptionEnd"
+        assert data["content"] == "Description End"
 
     def test_find_returns_default_on_miss(self):
         html = "<div><h2>Title</h2></div>"

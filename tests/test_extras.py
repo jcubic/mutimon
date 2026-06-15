@@ -184,6 +184,17 @@ class TestExtractValueEdgeCases:
         )
         assert result == "123"
 
+    def test_text_preserves_space_around_inline_elements(self):
+        """Text spanning inline elements with trailing/leading whitespace must
+        preserve word boundaries. Regression: Wikipedia thread titles like
+        '<a>Szablon:ISG</a> ponownie' were rendered as 'Szablon:ISGponownie'."""
+        from bs4 import BeautifulSoup
+
+        html = '<h2><a href="x">Szablon:ISG</a> ponownie</h2>'
+        h2 = BeautifulSoup(html, "html.parser").select_one("h2")
+        result = main.extract_value(h2, {"type": "text"})
+        assert result == "Szablon:ISG ponownie"
+
 
 # ========================= parse_money edge cases =========================
 

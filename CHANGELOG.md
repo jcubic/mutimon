@@ -2,6 +2,8 @@
 * expose `http` data as variable
 * allow using validators and track in definitions
 * add `dedupe` field to remove duplicated entries from the list
+* add new operators to "test"
+* deprecate `{"match": ..., "regex": ...}`
 
 ## 0.4.0
 * add `flatten` prop to control processing multiple pages in one rule

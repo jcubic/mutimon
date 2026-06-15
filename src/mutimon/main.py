@@ -326,6 +326,60 @@ def validate_config(config, validate_only=False):
     if syntax_errors:
         _report_validation_errors(syntax_errors, validate_only)
 
+    for warning in _collect_deprecation_warnings(config):
+        print(f"Warning: {warning}", file=sys.stderr)
+
+
+def _collect_deprecation_warnings(config):
+    """Find deprecated config patterns and return human-readable warning strings."""
+    warnings = []
+
+    def check_validator(validator, path):
+        if isinstance(validator, list):
+            for i, v in enumerate(validator):
+                check_validator(v, f"{path}[{i}]")
+            return
+        if not isinstance(validator, dict) or "@id" in validator:
+            return
+        match = validator.get("match")
+        if not match:
+            return
+        matches = match if isinstance(match, list) else [match]
+        for i, m in enumerate(matches):
+            if isinstance(m, dict) and "regex" in m:
+                match_path = (
+                    f"{path}.match[{i}]" if isinstance(match, list) else f"{path}.match"
+                )
+                warnings.append(
+                    f"[{match_path}] 'match.regex' is deprecated; "
+                    f"use 'test' with =~ operator instead "
+                    f"(e.g. {{\"test\": \"title =~ /pattern/\"}})"
+                )
+
+    for name, v in config.get("defs", {}).get("validators", {}).items():
+        check_validator(v, f"defs.validators.{name}")
+
+    for rule in config.get("rules", []):
+        rule_name = rule.get("name", "?")
+        input_spec = rule.get("input")
+        if isinstance(input_spec, dict) and "each" not in input_spec:
+            input_spec = [input_spec]
+        elif isinstance(input_spec, dict) and "each" in input_spec:
+            v = input_spec.get("validator")
+            if v:
+                check_validator(v, f"rules.{rule_name}.input.validator")
+            input_spec = None
+        if isinstance(input_spec, list):
+            for i, entry in enumerate(input_spec):
+                v = entry.get("validator")
+                if v:
+                    suffix = f"[{i}]" if len(input_spec) > 1 else ""
+                    check_validator(
+                        v, f"rules.{rule_name}.input{suffix}.validator"
+                    )
+
+    return warnings
+
 
 def _report_validation_errors(errors, validate_only=False):
     """Format and report validation errors, then exit."""
@@ -934,7 +988,9 @@ def extract_value(element, value_spec, default=None, locale=None):
         return default
 
     if value_spec["type"] == "text":
-        raw = element.get_text(strip=True)
+        # Use separator=' ' to preserve word boundaries when text spans inline
+        # elements (e.g. <a>foo</a> bar would otherwise become "foobar")
+        raw = element.get_text(separator=" ", strip=True)
     elif value_spec["type"] == "html":
         raw = element.decode_contents()
     elif value_spec["type"] == "attribute":
@@ -2103,6 +2159,8 @@ def resolve_inputs(rule, validators_defs=None, definition=None):
                     "params": p,
                     "validator": def_validator if not def_track else None,
                     "track": def_track if not def_validator else None,
+                    "ref": None,
+                    "label": None,
                 }
                 for p in params
             ]
@@ -2110,6 +2168,8 @@ def resolve_inputs(rule, validators_defs=None, definition=None):
             "params": params,
             "validator": def_validator if not def_track else None,
             "track": def_track if not def_validator else None,
+            "ref": None,
+            "label": None,
         }]
     if isinstance(input_spec, dict):
         if "each" in input_spec:
@@ -2135,34 +2195,47 @@ def resolve_inputs(rule, validators_defs=None, definition=None):
         params = entry.get("params")
         if params is None:
             params = rule.get("params", {})
+        entry_ref = entry.get("ref")
+        entry_label = entry.get("label")
         if isinstance(params, list):
             for p in params:
-                results.append({"params": p, "validator": validator, "track": track})
+                results.append({
+                    "params": p, "validator": validator, "track": track,
+                    "ref": entry_ref, "label": entry_label,
+                })
         else:
-            results.append({"params": params, "validator": validator, "track": track})
+            results.append({
+                "params": params, "validator": validator, "track": track,
+                "ref": entry_ref, "label": entry_label,
+            })
     return results
 
 
 def process_rule(config, rule, save_only=False, init=False):
     """Process a single rule: fetch, diff, notify."""
     rule_name = rule["name"]
-    ref = rule["ref"]
+    default_ref = rule.get("ref")
     recipient = rule.get("email", config["email"]["server"]["email"])
     template_path = rule.get("template", "")
     subject_template = rule.get("subject", "")
     logging = rule.get("log", False)
 
-    log(f"Processing rule: '{rule_name}' (ref: {ref})")
-
-    # Look up definition
-    definition = config["defs"].get(ref)
-    if not definition:
-        print(f"Error: Definition '{ref}' not found in config.defs", file=sys.stderr)
-        return
+    log(f"Processing rule: '{rule_name}' (ref: {default_ref or '<per-input>'})")
 
     # Resolve inputs (multiple pages with different params + validators)
     validators_defs = config.get("defs", {}).get("validators", {})
-    inputs = resolve_inputs(rule, validators_defs, definition=definition)
+    default_def = config["defs"].get(default_ref) if default_ref else None
+    inputs = resolve_inputs(rule, validators_defs, definition=default_def)
+
+    # Aggregated rule = any input has its own ref. Triggers ID namespacing.
+    aggregated = any(inp.get("ref") for inp in inputs)
+    if default_ref is None and not aggregated:
+        print(
+            f"Error: Rule '{rule_name}' has no 'ref' and no input with 'ref'",
+            file=sys.stderr,
+        )
+        return
+
     all_items = []
     input_groups = []
     flatten = rule.get("flatten", True)
@@ -2173,16 +2246,26 @@ def process_rule(config, rule, save_only=False, init=False):
         params = input_entry["params"]
         validator = input_entry["validator"]
         track = input_entry.get("track")
+        entry_ref = input_entry.get("ref") or default_ref
+        definition = config["defs"].get(entry_ref)
+        if not definition:
+            print(
+                f"Error: Definition '{entry_ref}' not found in config.defs",
+                file=sys.stderr,
+            )
+            continue
+        label = input_entry.get("label") or entry_ref
 
         try:
-            items = fetch_all_items(definition, params, def_name=ref)
+            items = fetch_all_items(definition, params, def_name=entry_ref)
         except ValueError as e:
             # Structure change detected — send error email
             msg = str(e)
             print(f"Warning: {msg}", file=sys.stderr)
             send_error_email(
                 f"[mutimon] HTML structure changed for '{rule_name}'",
-                f"Rule '{rule_name}' (ref: {ref}) detected a page structure change.\n\n{msg}",
+                f"Rule '{rule_name}' (ref: {entry_ref}) "
+                f"detected a page structure change.\n\n{msg}",
             )
             continue
         except Exception as e:
@@ -2197,6 +2280,10 @@ def process_rule(config, rule, save_only=False, init=False):
                     item[k] = v
             if id_spec and not item.get("id"):
                 item["id"] = extract_id(item, id_spec)
+            # Namespace IDs in aggregated rules to prevent cross-source collisions
+            if aggregated and item.get("id"):
+                item["id"] = f"{entry_ref}:{item['id']}"
+            item["_label"] = label
 
         # Mark each item with validator result or track state
         if track:
@@ -2219,7 +2306,7 @@ def process_rule(config, rule, save_only=False, init=False):
                 print(f"Error: {msg}", file=sys.stderr)
                 send_error_email(
                     f"[mutimon] Config error in rule '{rule_name}'",
-                    f"Rule '{rule_name}' (ref: {ref}) has an invalid validator.\n\n{msg}",
+                    f"Rule '{rule_name}' (ref: {entry_ref}) has an invalid validator.\n\n{msg}",
                 )
                 return
             valid_count = sum(1 for i in items if i["_valid"])
@@ -2666,19 +2753,21 @@ def run():
             continue
 
         if args.dry_run:
-            ref = rule["ref"]
-            definition = config["defs"].get(ref)
-            if not definition:
-                print(f"Error: Definition '{ref}' not found", file=sys.stderr)
-                continue
+            default_ref = rule.get("ref")
+            default_def = config["defs"].get(default_ref) if default_ref else None
             info(f"[DRY RUN] Rule: '{rule_name}'")
-            inputs = resolve_inputs(rule, definition=definition)
+            inputs = resolve_inputs(rule, definition=default_def)
             all_items = []
             for input_entry in inputs:
                 params = input_entry["params"]
                 validator = input_entry["validator"]
+                entry_ref = input_entry.get("ref") or default_ref
+                definition = config["defs"].get(entry_ref)
+                if not definition:
+                    print(f"  Error: Definition '{entry_ref}' not found", file=sys.stderr)
+                    continue
                 try:
-                    items = fetch_all_items(definition, params, def_name=ref)
+                    items = fetch_all_items(definition, params, def_name=entry_ref)
                     if validator:
                         items = [i for i in items if evaluate_validator(validator, i)]
                     id_spec = definition.get("query", {}).get("id")

@@ -216,9 +216,9 @@ Use with `track` for up/down notifications:
 }
 ```
 
-Use `match` with `value` for header checks:
+Use `test` with `=~` for header checks (quote the Liquid result since `=~` requires a string):
 ```json
-{ "match": { "value": "{{ http.headers['content-type'] }}", "regex": "^application/json" } }
+{ "test": "\"{{ http.headers['content-type'] }}\" =~ /^application\\/json/" }
 ```
 
 ## Definition-level validator and track

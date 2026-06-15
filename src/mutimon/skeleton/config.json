@@ -106,7 +106,7 @@
     "validators": {
       "reddit-hiring": [
         { "test": "{% fresh date 604800 %}", "require": true },
-        { "match": { "var": "title", "regex": "(?i)\\b(hiring|hire|looking for)\\b.*(Python|JavaScript)" } }
+        { "test": "title =~ /\\b(hiring|hire|looking for)\\b.*(Python|JavaScript)/i" }
       ]
     },
     "reddit-atom": {

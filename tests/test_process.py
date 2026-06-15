@@ -1320,6 +1320,206 @@ class TestFlatten:
                 assert "X," in body
 
 
+# ========================= aggregated rule (per-input ref) =========================
+
+
+class TestAggregatedRule:
+    def setup_method(self):
+        main.setup_liquid({"defs": {}})
+
+    def _make_config(self, tmp_mutimon):
+        template = tmp_mutimon / "templates" / "test"
+        template.write_text(
+            "{% for group in items %}"
+            "[{{group[0]._label}}]"
+            "{% for item in group %}{{item.title}},{% endfor %}"
+            "{% endfor %}"
+        )
+        return {
+            "email": {
+                "server": {
+                    "host": "smtp.test.com", "port": 587,
+                    "password": "pass", "email": "from@test.com",
+                }
+            },
+            "defs": {
+                "site-a": {
+                    "url": "https://a.example.com",
+                    "query": {
+                        "type": "list",
+                        "selector": "div.item",
+                        "id": {"type": "attribute", "name": "data-id"},
+                        "variables": {
+                            "title": {"selector": "h3", "value": {"type": "text"}},
+                        },
+                    },
+                },
+                "site-b": {
+                    "url": "https://b.example.com",
+                    "query": {
+                        "type": "list",
+                        "selector": "div.item",
+                        "id": {"type": "attribute", "name": "data-id"},
+                        "variables": {
+                            "title": {"selector": "h3", "value": {"type": "text"}},
+                        },
+                    },
+                },
+            },
+            "rules": [],
+        }
+
+    def _mock_fetch_pages(self, pages):
+        """Mock that returns different HTML based on URL substring."""
+        def side_effect(*args, **kwargs):
+            url = args[1] if len(args) > 1 else kwargs.get("url", "")
+            for key, html in pages.items():
+                if key in url:
+                    resp = mock.MagicMock()
+                    resp.text = html
+                    resp.headers = {}
+                    return resp
+            resp = mock.MagicMock()
+            resp.text = "<html><body></body></html>"
+            resp.headers = {}
+            return resp
+        return mock.patch("mutimon.main.requests.request", side_effect=side_effect)
+
+    def test_aggregates_multiple_refs(self, tmp_mutimon):
+        """Rule with per-input ref fetches from multiple defs into one email."""
+        config = self._make_config(tmp_mutimon)
+        rule = {
+            "name": "agg-rule",
+            "flatten": False,
+            "subject": "Agg: {{count}}",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "input": [
+                {"ref": "site-a", "label": "A", "params": {}},
+                {"ref": "site-b", "label": "B", "params": {}},
+            ],
+        }
+        pages = {
+            "a.example.com": '<html><body><div class="item" data-id="1"><h3>Alpha</h3></div></body></html>',
+            "b.example.com": '<html><body><div class="item" data-id="1"><h3>Beta</h3></div></body></html>',
+        }
+        with self._mock_fetch_pages(pages):
+            with mock.patch("mutimon.main.send_email") as mock_send:
+                main.process_rule(config, rule)
+                mock_send.assert_called_once()
+                body = mock_send.call_args[0][3]
+                assert "[A]" in body and "Alpha," in body
+                assert "[B]" in body and "Beta," in body
+
+    def test_id_namespacing_prevents_collision(self, tmp_mutimon):
+        """When two defs produce the same ID, IDs are namespaced by ref."""
+        config = self._make_config(tmp_mutimon)
+        rule = {
+            "name": "agg-id-test",
+            "subject": "x",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "input": [
+                {"ref": "site-a", "label": "A", "params": {}},
+                {"ref": "site-b", "label": "B", "params": {}},
+            ],
+        }
+        # Both pages produce data-id="1" — without namespacing they'd dedupe to 1 item
+        pages = {
+            "a.example.com": '<html><body><div class="item" data-id="1"><h3>Alpha</h3></div></body></html>',
+            "b.example.com": '<html><body><div class="item" data-id="1"><h3>Beta</h3></div></body></html>',
+        }
+        with self._mock_fetch_pages(pages):
+            with mock.patch("mutimon.main.send_email"):
+                main.process_rule(config, rule)
+        state = main.load_state("agg-id-test")
+        assert len(state) == 2
+        ids = sorted(s["id"] for s in state)
+        assert ids == ["site-a:1", "site-b:1"]
+
+    def test_label_defaults_to_ref(self, tmp_mutimon):
+        """When no label is set, the ref name is used."""
+        config = self._make_config(tmp_mutimon)
+        rule = {
+            "name": "agg-no-label",
+            "flatten": False,
+            "subject": "x",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "input": [
+                {"ref": "site-a", "params": {}},
+            ],
+        }
+        pages = {
+            "a.example.com": '<html><body><div class="item" data-id="1"><h3>X</h3></div></body></html>',
+        }
+        with self._mock_fetch_pages(pages):
+            with mock.patch("mutimon.main.send_email"):
+                main.process_rule(config, rule)
+        state = main.load_state("agg-no-label")
+        assert state[0]["_label"] == "site-a"
+
+    def test_empty_groups_filtered_in_template(self, tmp_mutimon):
+        """Groups with no items don't appear in template (existing behavior)."""
+        config = self._make_config(tmp_mutimon)
+        rule = {
+            "name": "agg-empty-groups",
+            "flatten": False,
+            "subject": "x",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "input": [
+                {"ref": "site-a", "label": "A", "params": {}},
+                {"ref": "site-b", "label": "B", "params": {}},
+            ],
+        }
+        pages = {
+            "a.example.com": '<html><body><div class="item" data-id="1"><h3>Alpha</h3></div></body></html>',
+            # site-b returns nothing
+        }
+        with self._mock_fetch_pages(pages):
+            with mock.patch("mutimon.main.send_email") as mock_send:
+                main.process_rule(config, rule)
+                body = mock_send.call_args[0][3]
+                assert "[A]" in body
+                assert "[B]" not in body
+
+    def test_top_level_ref_still_works(self, tmp_mutimon):
+        """Existing rules with top-level ref keep working unchanged."""
+        config = self._make_config(tmp_mutimon)
+        rule = {
+            "ref": "site-a",
+            "name": "agg-fallback",
+            "subject": "x",
+            "template": "./templates/test",
+            "email": "user@test.com",
+        }
+        pages = {
+            "a.example.com": '<html><body><div class="item" data-id="1"><h3>X</h3></div></body></html>',
+        }
+        with self._mock_fetch_pages(pages):
+            with mock.patch("mutimon.main.send_email") as mock_send:
+                main.process_rule(config, rule)
+                mock_send.assert_called_once()
+        state = main.load_state("agg-fallback")
+        # No namespacing because no input has its own ref
+        assert state[0]["id"] == "1"
+
+    def test_no_ref_anywhere_errors(self, tmp_mutimon, capsys):
+        """Rule with neither top-level ref nor any input ref reports error."""
+        config = self._make_config(tmp_mutimon)
+        rule = {
+            "name": "agg-no-ref",
+            "subject": "x",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "input": [{"params": {}}],
+        }
+        main.process_rule(config, rule)
+        err = capsys.readouterr().err
+        assert "no 'ref'" in err
+
+
 # ========================= rule logging details =========================
 
 
