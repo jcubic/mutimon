@@ -155,7 +155,7 @@ try:
     from croniter import croniter
     from bs4 import BeautifulSoup
     from jsonschema import Draft202012Validator
-except ImportError:
+except ImportError:  # pragma: no cover - exercised only when a dependency is missing
     tb = traceback.format_exc()
     print(tb, file=sys.stderr)
     send_error_email(
@@ -2797,7 +2797,7 @@ def run():
 
 def main():
     """Entry point for the mon command."""
-    if "_ARGCOMPLETE" in os.environ:
+    if "_ARGCOMPLETE" in os.environ:  # pragma: no cover - shell completion shim
         parser, _ = build_parser()
         import argcomplete
         argcomplete.autocomplete(parser)
@@ -2813,5 +2813,5 @@ def main():
         )
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()
