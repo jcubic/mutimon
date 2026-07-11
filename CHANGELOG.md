@@ -4,6 +4,7 @@
 * add `dedupe` field to remove duplicated entries from the list
 * add new operators to "test"
 * deprecate `{"match": ..., "regex": ...}`
+* add new date parse type
 
 ## 0.4.0
 * add `flatten` prop to control processing multiple pages in one rule
