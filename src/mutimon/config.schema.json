@@ -492,8 +492,8 @@
         },
         "parse": {
           "type": "string",
-          "enum": ["number", "money", "list", "json", "url"],
-          "description": "Parse the extracted string into a typed value. 'number': plain numeric parsing. 'money': locale-aware currency parsing via babel. 'list': split into a list using 'delimiter' regex. 'json': parse as JSON, then optionally query with JMESPath via the 'query' field. 'url': resolve the value against 'prefix' using URL joining (handles protocol-relative, absolute, and relative URLs)."
+          "enum": ["number", "money", "list", "json", "url", "date"],
+          "description": "Parse the extracted string into a typed value. 'number': plain numeric parsing. 'money': locale-aware currency parsing via babel. 'list': split into a list using 'delimiter' regex. 'json': parse as JSON, then optionally query with JMESPath via the 'query' field. 'url': resolve the value against 'prefix' using URL joining (handles protocol-relative, absolute, and relative URLs). 'date': normalize a (possibly localized) date string to ISO 8601 ('YYYY-MM-DD') using the page's detected locale for month names, so date commands like {% today %} / {% fresh %} work on non-English dates. A missing year defaults to the current year."
         },
         "delimiter": {
           "type": "string",

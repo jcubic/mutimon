@@ -327,6 +327,16 @@ class TestExtractValue:
         result = main.extract_value(el, {"type": "text", "parse": "json"})
         assert result == {"key": "value"}
 
+    def test_parse_date_extract_value(self):
+        from babel import Locale
+        html = "<span>10 lip 2026</span>"
+        soup = BeautifulSoup(html, "html.parser")
+        el = soup.select_one("span")
+        result = main.extract_value(
+            el, {"type": "text", "parse": "date"}, locale=Locale.parse("pl")
+        )
+        assert result == "2026-07-10"
+
     def test_none_element_returns_default(self):
         result = main.extract_value(None, {"type": "text"}, default="fallback")
         assert result == "fallback"
@@ -402,6 +412,46 @@ class TestParseMoney:
 
     def test_empty_returns_zero(self):
         assert main.parse_money("") == 0
+
+
+class TestParseDate:
+    def _pl(self):
+        from babel import Locale
+        return Locale.parse("pl")
+
+    def test_iso_passthrough(self):
+        assert main.parse_date("2026-07-10") == "2026-07-10"
+
+    def test_polish_abbreviated_with_year(self):
+        assert main.parse_date("10 lip 2026", locale=self._pl()) == "2026-07-10"
+
+    def test_polish_genitive_heading_uses_current_year(self):
+        # Section headings omit the year (e.g. "10 lipca"); default to now's year.
+        year = datetime.now().year
+        assert main.parse_date("10 lipca", locale=self._pl()) == f"{year}-07-10"
+
+    def test_polish_signature_timestamp(self):
+        # Full signature: "23:52, 10 lip 2026 (CEST)".
+        result = main.parse_date("23:52, 10 lip 2026 (CEST)", locale=self._pl())
+        assert result == "2026-07-10"
+
+    def test_polish_month_with_diacritics(self):
+        # października -> October (10); paź -> October too.
+        assert main.parse_date("5 października 2026", locale=self._pl()) == "2026-10-05"
+
+    def test_english_fallback(self):
+        from babel import Locale
+        result = main.parse_date("10 July 2026", locale=Locale.parse("en"))
+        assert result == "2026-07-10"
+
+    def test_unparseable_returns_original(self):
+        assert main.parse_date("not a date", locale=self._pl()) == "not a date"
+
+    def test_empty_string(self):
+        assert main.parse_date("", locale=self._pl()) == ""
+
+    def test_no_locale_defaults_english(self):
+        assert main.parse_date("2026-07-10") == "2026-07-10"
 
 
 class TestExtractVariables:

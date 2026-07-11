@@ -34,7 +34,7 @@ import smtplib
 import sys
 import time
 import traceback
-from datetime import datetime
+from datetime import date, datetime
 from email.message import EmailMessage
 from urllib.parse import urljoin
 
@@ -1026,6 +1026,8 @@ def extract_value(element, value_spec, default=None, locale=None):
         raw = parse_number(raw)
     elif parse == "money":
         raw = parse_money(raw, locale=locale)
+    elif parse == "date":
+        raw = parse_date(raw, locale=locale)
     elif parse == "list":
         delimiter = value_spec.get("delimiter", r"\s*,\s*")
         raw = [s for s in re.split(delimiter, raw) if s]
@@ -1156,6 +1158,77 @@ def parse_money(value, locale=None):
             return float(s)
         except (ValueError, TypeError):
             return 0.0
+
+
+_month_maps = {}
+
+
+def _month_map(locale):
+    """Build a lowercase month-name -> number map for a babel locale.
+
+    Includes both 'format' and 'stand-alone' contexts at 'abbreviated' and
+    'wide' widths, so localized forms all resolve — e.g. the Polish genitive
+    "lipca" (format/wide, used in section headings), the abbreviation "lip"
+    (format/abbreviated, used in signatures), and the nominative "lipiec"
+    (stand-alone/wide) all map to 7.
+    """
+    key = str(locale)
+    cached = _month_maps.get(key)
+    if cached is not None:
+        return cached
+    months = {}
+    for context in ("format", "stand-alone"):
+        for width in ("abbreviated", "wide"):
+            try:
+                names = locale.months[context][width]
+            except Exception:
+                continue
+            for num, name in names.items():
+                months[str(name).lower().rstrip(".")] = num
+    _month_maps[key] = months
+    return months
+
+
+def parse_date(value, locale=None):
+    """
+    Parse a (possibly localized) date string into an ISO 8601 date string
+    ("YYYY-MM-DD"), using the page's detected locale for month names.
+
+    Handles "<day> <month-name> [<year>]" with localized month names, such as
+    the Polish section heading "10 lipca" (year omitted -> current year) and
+    the signature "23:52, 10 lip 2026 (CEST)". Falls back to dateutil for
+    ISO / English / numeric formats. Returns the original string unchanged if
+    no date can be extracted, so unparseable values stay visible for debugging.
+    """
+    if not isinstance(value, str):
+        return value
+    s = value.strip()
+    if not s:
+        return s
+
+    if locale is None:
+        locale = Locale.parse("en")
+
+    # Try "<day> <localized month name> [<year>]".
+    months = _month_map(locale)
+    match = re.search(r"(\d{1,2})\s+([^\W\d_]+)\.?(?:\s+(\d{4}))?", s, re.UNICODE)
+    if match:
+        month = months.get(match.group(2).lower())
+        if month:
+            day = int(match.group(1))
+            year = int(match.group(3)) if match.group(3) else datetime.now().year
+            try:
+                return date(year, month, day).isoformat()
+            except ValueError:
+                pass
+
+    # Fallback: dateutil handles ISO / English / numeric formats.
+    try:
+        from dateutil import parser as date_parser
+
+        return date_parser.parse(s).date().isoformat()
+    except Exception:
+        return value
 
 
 def extract_id(item_data, id_spec, element=None):

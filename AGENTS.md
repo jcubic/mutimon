@@ -73,7 +73,8 @@ A generic, config-driven web scraper that monitors websites for changes and send
    - `query.type` — `"list"` (multiple items) or `"single"` (one item per page)
    - `query.selector` — CSS selector for item container (for XML: element names like `item`, `entry`)
    - `query.variables` — each variable: `selector` + `value` (`type: "text"`, `type: "attribute"` with `name`, or `type: "html"` for raw inner HTML)
-   - Optional: `pagination`, `filter`, `id`, `value.parse: "number"|"money"|"list"|"json"`, `value.regex`, `value.prefix`
+   - Optional: `pagination`, `filter`, `id`, `value.parse: "number"|"money"|"list"|"json"|"url"|"date"`, `value.regex`, `value.prefix`
+     - `value.parse: "date"` normalizes a localized date string to ISO 8601 (`YYYY-MM-DD`) using the page's detected locale for month names (e.g. Polish `"10 lipca"`/`"10 lip 2026"` → `"2026-07-10"`), so date commands (`{% today %}`, `{% fresh %}`, and custom ones like `{% before_today %}`) work on non-English dates. Missing year → current year; unparseable values pass through unchanged.
    - Optional: `query.reject` — array of CSS selectors; if any match, the page returns 0 items (e.g. a "no results" indicator that hides recommended/unrelated content)
    - Optional: `sibling: true` on a variable to search next sibling element
    - Optional: `collect: true` on a variable to extract ALL matching elements as a list (use `{% for %}` in templates)
