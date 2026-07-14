@@ -29,8 +29,7 @@ A generic, config-driven web scraper that monitors websites for changes and send
 - `src/mutimon/main.py` — main script, all logic in one file
 - `src/mutimon/config.schema.json` — JSON Schema for validation, used by `--validate` and on every run
 - `src/mutimon/skeleton/` — default config + templates copied to `~/.mutimon/` on first run
-- `pyproject.toml` — pip package configuration, installs `mon` command
-- `requirements.txt` — pinned minimum versions for all dependencies
+- `pyproject.toml` — pip package configuration and the single source of truth for dependencies; installs `mon` command
 
 ## Architecture
 
