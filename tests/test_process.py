@@ -333,6 +333,93 @@ class TestProcessRule:
         state = main.load_state("test-fail")
         assert state == []
 
+    def test_group_index_aligned_when_early_input_fails(self, tmp_mutimon):
+        """Aggregated flatten:false rule must not crash when an early input
+        fails to fetch (e.g. HTML structure change). The skipped input must
+        not offset the _group_index of later inputs' items."""
+        template = tmp_mutimon / "templates" / "agg"
+        template.write_text(
+            "{% for group in items %}"
+            "{% for item in group %}{{item.title}}\n{% endfor %}"
+            "{% endfor %}"
+        )
+        config = {
+            "email": {
+                "server": {
+                    "host": "smtp.test.com",
+                    "port": 587,
+                    "password": "pass",
+                    "email": "from@test.com",
+                }
+            },
+            "defs": {
+                "bad-site": {
+                    "url": "https://bad.example.com",
+                    "query": {
+                        "type": "list",
+                        "selector": "div.item",
+                        # expect fails on the returned HTML -> ValueError -> skipped
+                        "expect": ["div.required-marker"],
+                        "id": {"type": "attribute", "name": "data-id"},
+                        "variables": {
+                            "title": {"selector": "h3", "value": {"type": "text"}},
+                        },
+                    },
+                },
+                "good-site": {
+                    "url": "https://good.example.com/{{n}}",
+                    "query": {
+                        "type": "list",
+                        "selector": "div.item",
+                        "id": {"type": "attribute", "name": "data-id"},
+                        "variables": {
+                            "title": {"selector": "h3", "value": {"type": "text"}},
+                        },
+                    },
+                },
+            },
+            "rules": [],
+        }
+        rule = {
+            "name": "agg-early-fail",
+            "flatten": False,
+            "subject": "New: {{count}}",
+            "template": "./templates/agg",
+            "email": "user@test.com",
+            # good (0), bad (1, skipped), good (2): the surviving input AFTER
+            # the skipped one is what triggers the IndexError before the fix.
+            "input": [
+                {"ref": "good-site", "label": "good-a", "params": {"n": "a"}},
+                {"ref": "bad-site", "label": "bad"},
+                {"ref": "good-site", "label": "good-b", "params": {"n": "b"}},
+            ],
+        }
+        url_to_html = {
+            "https://bad.example.com": "<html><body>"
+            '<div class="item" data-id="1"><h3>Bad</h3></div></body></html>',
+            "https://good.example.com/a": "<html><body>"
+            '<div class="item" data-id="2"><h3>GoodA</h3></div></body></html>',
+            "https://good.example.com/b": "<html><body>"
+            '<div class="item" data-id="3"><h3>GoodB</h3></div></body></html>',
+        }
+
+        def side_effect(method, url, **kwargs):
+            resp = mock.MagicMock()
+            resp.text = url_to_html[url]
+            resp.headers = {}
+            return resp
+
+        with mock.patch("mutimon.main.requests.request", side_effect=side_effect):
+            with mock.patch("mutimon.main.send_error_email"):
+                with mock.patch("mutimon.main.send_email") as mock_send:
+                    main.process_rule(config, rule)
+                    mock_send.assert_called_once()
+
+        # Both good-site inputs survive; the failed input is simply skipped
+        # and must not crash the rule.
+        state = main.load_state("agg-early-fail")
+        assert sorted(i["id"] for i in state) == ["good-site:2", "good-site:3"]
+
     def test_missing_definition(self, tmp_mutimon, capsys):
         config = self._make_config(tmp_mutimon)
         rule = {
@@ -1206,6 +1293,36 @@ class TestFlatten:
                 assert "A," in body
                 assert "B," in body
 
+    def test_flatten_false_single_input_groups(self, tmp_mutimon):
+        """flatten:false with a single input must still render grouped (list of
+        lists), not fall through to the flat path. Regression for the
+        `len(input_groups) > 1` guard that broke single-source aggregated rules.
+        """
+        config = self._make_config(tmp_mutimon)
+        rule = {
+            "ref": "test-site",
+            "name": "test-flatten-single",
+            "flatten": False,
+            "subject": "New: {{count}}",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "input": [
+                {"params": {"page": "SEO"}},
+            ],
+        }
+        pages = {
+            "SEO": '<html><body><div class="item" data-id="1"><h3>A</h3></div></body></html>',
+        }
+        with self._mock_fetch_pages(pages):
+            with mock.patch("mutimon.main.send_email") as mock_send:
+                main.process_rule(config, rule)
+                mock_send.assert_called_once()
+                body = mock_send.call_args[0][3]
+                # When grouped correctly, the inner `{% for item in group %}`
+                # iterates real items and emits the title. On the broken flat
+                # path, `group` is an item dict and no title is rendered.
+                assert "A," in body
+
     def test_flatten_false_second_group_only(self, tmp_mutimon):
         """When first input has no new items, second group gets correct metadata."""
         config = self._make_config(tmp_mutimon)
@@ -1294,31 +1411,6 @@ class TestFlatten:
                 main.process_rule(config, rule)
         state = main.load_state("test-dedup-flat")
         assert len(state) == 1
-
-    def test_flatten_false_single_input_renders_flat(self, tmp_mutimon):
-        """With flatten=false but only one input, renders as flat list."""
-        config = self._make_config(tmp_mutimon)
-        template = tmp_mutimon / "templates" / "test"
-        template.write_text("{% for item in items %}{{item.title}},{% endfor %}")
-        rule = {
-            "ref": "test-site",
-            "name": "test-flatten-single",
-            "flatten": False,
-            "subject": "New: {{count}}",
-            "template": "./templates/test",
-            "email": "user@test.com",
-            "input": [{"params": {"page": "SEO"}}],
-        }
-        pages = {
-            "SEO": '<html><body><div class="item" data-id="1"><h3>X</h3></div></body></html>',
-        }
-        with self._mock_fetch_pages(pages):
-            with mock.patch("mutimon.main.send_email") as mock_send:
-                main.process_rule(config, rule)
-                mock_send.assert_called_once()
-                body = mock_send.call_args[0][3]
-                assert "X," in body
-
 
 # ========================= aggregated rule (per-input ref) =========================
 
@@ -1876,3 +1968,46 @@ class TestMainEntryPoint:
                 main.main()
         err = capsys.readouterr().err
         assert "boom" in err
+
+
+# ========================= reset_rule =========================
+
+
+class TestResetRule:
+    def test_removes_state_and_lastrun(self, tmp_mutimon):
+        main.save_state("myrule", [{"id": "1", "title": "A"}])
+        main.save_last_run("myrule")
+        state_file = tmp_mutimon / "data" / "myrule"
+        run_file = tmp_mutimon / "data" / ".lastrun_myrule"
+        assert state_file.exists()
+        assert run_file.exists()
+
+        removed = main.reset_rule("myrule")
+
+        assert not state_file.exists()
+        assert not run_file.exists()
+        assert str(state_file) in removed
+        assert str(run_file) in removed
+
+    def test_removes_saved_email(self, tmp_mutimon):
+        main.save_email_to_file("myrule", "Subject", "Body")
+        email_file = tmp_mutimon / "data" / "emails" / "myrule.txt"
+        assert email_file.exists()
+
+        removed = main.reset_rule("myrule")
+
+        assert not email_file.exists()
+        assert str(email_file) in removed
+
+    def test_no_data_returns_empty(self, tmp_mutimon):
+        removed = main.reset_rule("never-ran")
+        assert removed == []
+
+    def test_only_targets_named_rule(self, tmp_mutimon):
+        main.save_state("keep", [{"id": "1"}])
+        main.save_state("drop", [{"id": "2"}])
+
+        main.reset_rule("drop")
+
+        assert (tmp_mutimon / "data" / "keep").exists()
+        assert not (tmp_mutimon / "data" / "drop").exists()

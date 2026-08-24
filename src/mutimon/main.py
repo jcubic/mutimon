@@ -605,6 +605,22 @@ def save_last_run(rule_name):
         f.write(datetime.now().isoformat())
 
 
+def reset_rule(rule_name):
+    """Remove all persisted data for a rule: state, last-run timestamp, and any
+    saved email. Returns the list of file paths that were removed."""
+    targets = [
+        os.path.join(DATA_DIR, rule_name),
+        os.path.join(DATA_DIR, f".lastrun_{rule_name}"),
+        os.path.join(DATA_DIR, "emails", f"{rule_name}.txt"),
+    ]
+    removed = []
+    for path in targets:
+        if os.path.exists(path):
+            os.remove(path)
+            removed.append(path)
+    return removed
+
+
 def should_run_now(rule):
     """
     Check if a rule should run based on its cron schedule.
@@ -2392,8 +2408,12 @@ def process_rule(config, rule, save_only=False, init=False):
             "search_url": search_url,
         })
         if not flatten:
+            # Index by position in the compacted input_groups list, not the
+            # raw loop index — earlier inputs may have been skipped (e.g. a
+            # fetch failure), which would otherwise offset later items.
+            group_index = len(input_groups) - 1
             for item in items:
-                item["_group_index"] = input_index
+                item["_group_index"] = group_index
         all_items.extend(items)
 
     # Deduplicate items by ID when flattening (multiple inputs may overlap)
@@ -2526,7 +2546,7 @@ def process_rule(config, rule, save_only=False, init=False):
             # Load and render template
             template_str = load_template(template_path)
             if template_str:
-                if not flatten and len(input_groups) > 1:
+                if not flatten and input_groups:
                     grouped = [[] for _ in input_groups]
                     for item in notify_items:
                         grouped[item.get("_group_index", 0)].append(item)
@@ -2665,6 +2685,14 @@ def build_parser():
         "With rule names: init only those rules.",
     ).completer = rule_completer
     parser.add_argument(
+        "--reset",
+        nargs="+",
+        default=None,
+        metavar="RULE",
+        help="Delete all stored data (state, last-run, saved email) for the "
+        "named rule(s) and exit. Requires at least one rule name.",
+    ).completer = rule_completer
+    parser.add_argument(
         "--validate",
         action="store_true",
         help="Validate the config file against the schema and exit",
@@ -2760,6 +2788,26 @@ def run():
         else:
             for rule in rules:
                 print(rule["name"])
+        return
+
+    if args.reset is not None:
+        rule_names = {r["name"] for r in config.get("rules", [])}
+        unknown = set(args.reset) - rule_names
+        if unknown:
+            print(
+                f"Error: Rule(s) not found: {', '.join(sorted(unknown))}. "
+                f"Available rules: {', '.join(sorted(rule_names))}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        for name in args.reset:
+            removed = reset_rule(name)
+            if removed:
+                print(f"Reset '{name}': removed {len(removed)} file(s):")
+                for path in removed:
+                    print(f"  {path}")
+            else:
+                print(f"Reset '{name}': no stored data found.")
         return
 
     # Check if SMTP credentials are still the skeleton defaults

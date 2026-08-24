@@ -247,3 +247,78 @@ class TestDryRun:
         )
         rc, out, _ = run_mon("--dry-run", "--force")
         assert rc == 0
+
+
+class TestReset:
+    def setup_method(self):
+        import shutil
+
+        self.mutimon_dir = os.path.join(_TEST_HOME, ".mutimon")
+        if os.path.exists(self.mutimon_dir):
+            shutil.rmtree(self.mutimon_dir)
+        self.data_dir = os.path.join(self.mutimon_dir, "data")
+        os.makedirs(self.data_dir, exist_ok=True)
+        os.makedirs(os.path.join(self.mutimon_dir, "templates"), exist_ok=True)
+
+    def _write_config(self, config):
+        config_path = os.path.join(self.mutimon_dir, "config.json")
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+
+    def _base_config(self):
+        return {
+            "email": {
+                "server": {
+                    "host": "smtp.real.com",
+                    "port": 587,
+                    "password": "x",
+                    "email": "x@x.com",
+                }
+            },
+            "defs": {
+                "site": {
+                    "url": "https://example.com",
+                    "query": {"type": "list", "selector": "div", "variables": {}},
+                }
+            },
+            "rules": [
+                {
+                    "ref": "site",
+                    "name": "my-rule",
+                    "schedule": "0 * * * *",
+                    "subject": "Test",
+                    "template": "./templates/test",
+                    "email": "x@x.com",
+                }
+            ],
+        }
+
+    def test_reset_in_help(self):
+        rc, out, _ = run_mon("--help")
+        assert rc == 0
+        assert "--reset" in out
+
+    def test_reset_clears_data(self):
+        self._write_config(self._base_config())
+        state_file = os.path.join(self.data_dir, "my-rule")
+        run_file = os.path.join(self.data_dir, ".lastrun_my-rule")
+        with open(state_file, "w") as f:
+            f.write("[]")
+        with open(run_file, "w") as f:
+            f.write("2020-01-01T00:00:00")
+
+        rc, out, _ = run_mon("--reset", "my-rule")
+        assert rc == 0
+        assert not os.path.exists(state_file)
+        assert not os.path.exists(run_file)
+
+    def test_reset_unknown_rule_errors(self):
+        self._write_config(self._base_config())
+        rc, _, err = run_mon("--reset", "nope")
+        assert rc != 0
+        assert "not found" in err.lower()
+
+    def test_reset_requires_rule_name(self):
+        self._write_config(self._base_config())
+        rc, _, _ = run_mon("--reset")
+        assert rc != 0

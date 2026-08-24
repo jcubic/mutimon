@@ -100,6 +100,7 @@ A generic, config-driven web scraper that monitors websites for changes and send
 --save-email      save emails to file instead of sending
 --force           ignore schedules, run all rules
 --force <rule>    ignore schedule, run only the named rule (errors if name not found)
+--reset <rule>    delete all stored data (state, last-run, saved email) for the named rule(s), then exit (requires at least one rule; errors if name not found)
 -v, --verbose     show detailed progress output
 -q, --quiet       suppress all output including errors
 ```

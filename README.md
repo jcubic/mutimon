@@ -61,6 +61,7 @@ mon --force            # ignore schedules, run all rules now
 mon --force <rule> ... # ignore schedule, run only the named rule(s)
 mon --init             # seed state for all rules without sending notifications
 mon --init <rule> ...  # seed state for specific rule(s) without sending notifications
+mon --reset <rule> ... # delete all stored data (state, last-run, saved email) for the named rule(s)
 mon --dry-run          # fetch and display data, bypass schedules, no state changes
 mon --save-email       # save email to file instead of sending via SMTP
 mon --validate         # validate config against schema and exit
@@ -101,9 +102,20 @@ mon --init my-rule     # seed state for a specific rule
 
 Like `--force`, `--init` bypasses schedules. All items are fetched, validated, and saved to state, but no emails are sent.
 
+### Resetting state (`--reset`)
+
+Use `--reset` to delete all stored data for one or more rules — the state file, the last-run timestamp, and any saved email. The next run then treats every item as new:
+
+```bash
+mon --reset my-rule            # clear one rule
+mon --reset rule-a rule-b      # clear several rules
+```
+
+At least one rule name is required (there is deliberately no "reset everything" form). Unknown rule names are rejected with an error, and nothing is fetched or sent.
+
 ### Shell completion
 
-Tab completion is available for `bash`, `zsh`, and `fish`. It completes long options and rule names for `--force` and `--init`.
+Tab completion is available for `bash`, `zsh`, and `fish`. It completes long options and rule names for `--force`, `--init`, and `--reset`.
 
 Generate the completion script:
 
