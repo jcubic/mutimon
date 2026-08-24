@@ -1,3 +1,7 @@
+## 0.6.0
+* add `--reset` options
+* fix `flatten` flag on inputs with one item
+
 ## 0.5.0
 * expose `http` data as variable
 * allow using validators and track in definitions
