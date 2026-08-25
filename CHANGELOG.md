@@ -3,7 +3,7 @@
 * fix `flatten` flag on inputs with one item
 
 ## 0.5.0
-* expose `http` data as variable
+* expose `http` data as a variable
 * allow using validators and track in definitions
 * add `dedupe` field to remove duplicated entries from the list
 * add new operators to "test"
@@ -23,7 +23,7 @@
 
 ## 0.3.0
 * add a way to interact with an API
-* support authentication (cookie and token based)
+* support authentication (cookie and token-based)
 * add tracking state machine (support price changes)
 * allow an array of rules in a custom validator
 * extend input syntax to allow using an array of data
