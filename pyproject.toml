@@ -54,6 +54,15 @@ mutimon = ["skeleton/**/*", "config.schema.json", "AI_GUIDE.md"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+# Pin the ruleset explicitly so linting is independent of ruff's default set,
+# which has expanded across versions. This is ruff's classic default (pycodestyle
+# errors + Pyflakes). To adopt more rules, add their codes here deliberately.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.coverage.run]
 source = ["mutimon"]
 
