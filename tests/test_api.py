@@ -5,8 +5,17 @@ import os
 from unittest import mock
 
 import pytest
+import requests
 
 from mutimon import main
+
+
+def _http_error(status):
+    """Build a requests.HTTPError whose response reports the given status."""
+    err = requests.HTTPError()
+    err.response = mock.MagicMock()
+    err.response.status_code = status
+    return err
 
 
 # ========================= Secrets =========================
@@ -205,6 +214,114 @@ class TestFetchAllItemsJson:
         assert len(items) == 2
         assert items[0]["page"] == "/home"
         assert items[0]["id"] == "/home"
+
+
+class TestFetchAllItemsJsonSources:
+    """Multi-source definitions: several URLs merged into one item."""
+
+    def setup_method(self):
+        main.setup_liquid({"defs": {}})
+
+    def test_single_list_and_noquery_sources(self):
+        definition = {
+            "format": "json",
+            "url": "https://api.example.com/x",
+            "sources": [
+                {
+                    "name": "stats",
+                    "url": "https://api.example.com/stats",
+                    "query": {"type": "single", "variables": {"views": {"path": "views"}}},
+                },
+                {
+                    "name": "pages",
+                    "url": "https://api.example.com/pages",
+                    "query": {"type": "list", "variables": {"p": {"path": "p"}}},
+                },
+                {"name": "raw", "url": "https://api.example.com/raw"},
+            ],
+            "query": {"type": "single", "id": {"source": "stats_views"}},
+        }
+        payloads = [{"views": 10}, [{"p": "a"}, {"p": "b"}], {"anything": 1}]
+        with mock.patch("mutimon.main.fetch_json", side_effect=payloads):
+            items = main.fetch_all_items(definition, {}, def_name="s")
+
+        assert len(items) == 1
+        item = items[0]
+        assert item["stats_views"] == 10
+        assert item["pages"] == [{"p": "a"}, {"p": "b"}]
+        assert item["raw"] == {"anything": 1}
+        assert item["id"] == 10
+
+    def test_source_401_triggers_retry_auth(self):
+        definition = {
+            "format": "json",
+            "url": "https://api.example.com/x",
+            "auth": {
+                "login": {"url": "https://auth", "extract": {}},
+                "apply": {"headers": {"Authorization": "Bearer x"}},
+            },
+            "sources": [
+                {
+                    "name": "stats",
+                    "url": "https://api.example.com/stats",
+                    "query": {"type": "single", "variables": {"v": {"path": "v"}}},
+                }
+            ],
+            "query": {"type": "single"},
+        }
+        with mock.patch("mutimon.main.resolve_auth", return_value=({}, {}, {"token": "t"})):
+            with mock.patch(
+                "mutimon.main.retry_auth",
+                return_value=({"Authorization": "Bearer new"}, {}, {"token": "t2"}),
+            ):
+                with mock.patch(
+                    "mutimon.main.fetch_json", side_effect=[_http_error(401), {"v": 5}]
+                ):
+                    items = main.fetch_all_items(definition, {}, def_name="s")
+        assert items[0]["stats_v"] == 5
+
+    def test_source_401_without_recovery_raises(self):
+        definition = {
+            "format": "json",
+            "url": "https://api.example.com/x",
+            "auth": {"login": {"url": "https://auth", "extract": {}}, "apply": {}},
+            "sources": [
+                {
+                    "name": "stats",
+                    "url": "https://api.example.com/stats",
+                    "query": {"type": "single", "variables": {"v": {"path": "v"}}},
+                }
+            ],
+            "query": {"type": "single"},
+        }
+        with mock.patch("mutimon.main.resolve_auth", return_value=({}, {}, {"token": "t"})):
+            with mock.patch("mutimon.main.retry_auth", return_value=None):
+                with mock.patch("mutimon.main.fetch_json", side_effect=_http_error(401)):
+                    with pytest.raises(requests.HTTPError):
+                        main.fetch_all_items(definition, {}, def_name="s")
+
+
+class TestJsonValueQuery:
+    """value.parse: json + value.query on an HTML page."""
+
+    def test_scalar_json_yields_empty_list(self):
+        html = '<div class="item"><script id="d">123</script></div>'
+        query = {
+            "type": "list",
+            "selector": ".item",
+            "variables": {
+                "data": {
+                    "selector": "#d",
+                    "value": {
+                        "type": "text",
+                        "parse": "json",
+                        "query": {"type": "list", "path": "x"},
+                    },
+                }
+            },
+        }
+        items = main.parse_items(html, query)
+        assert items[0]["data"] == []
 
 
 # ========================= HTTP Features =========================
@@ -481,6 +598,64 @@ class TestRetryAuth:
     def test_no_login_no_refresh(self):
         result = main.retry_auth({}, {}, "x", None)
         assert result is None
+
+
+class TestFetchAllItemsAuthRetry:
+    """A 401 from a single-URL fetch re-authenticates and retries once."""
+
+    def setup_method(self):
+        main.setup_liquid({"defs": {}})
+
+    def test_single_json_401_retry(self):
+        definition = {
+            "format": "json",
+            "url": "https://api.example.com/x",
+            "auth": {"login": {"url": "https://auth", "extract": {}}, "apply": {}},
+            "query": {"type": "single", "variables": {"v": {"path": "v"}}},
+        }
+        with mock.patch("mutimon.main.resolve_auth", return_value=({}, {}, {"token": "t"})):
+            with mock.patch(
+                "mutimon.main.retry_auth", return_value=({}, {}, {"token": "t2"})
+            ):
+                with mock.patch(
+                    "mutimon.main.fetch_json", side_effect=[_http_error(401), {"v": 9}]
+                ):
+                    items = main.fetch_all_items(definition, {}, def_name="s")
+        assert items[0]["v"] == 9
+
+    def test_html_401_retry(self):
+        definition = {
+            "url": "https://example.com",
+            "auth": {"login": {"url": "https://auth", "extract": {}}, "apply": {}},
+            "query": {
+                "type": "single",
+                "selector": "div",
+                "variables": {"t": {"selector": "span", "value": {"type": "text"}}},
+            },
+        }
+        html = "<div><span>hi</span></div>"
+        locale = main.Locale.parse("en")
+        with mock.patch("mutimon.main.resolve_auth", return_value=({}, {}, {"token": "t"})):
+            with mock.patch(
+                "mutimon.main.retry_auth", return_value=({}, {}, {"token": "t2"})
+            ):
+                with mock.patch(
+                    "mutimon.main.fetch_page",
+                    side_effect=[_http_error(401), (html, locale)],
+                ):
+                    items = main.fetch_all_items(definition, {}, def_name="s")
+        assert items[0]["t"] == "hi"
+
+    def test_html_500_not_retried(self):
+        definition = {
+            "url": "https://example.com",
+            "auth": {"login": {"url": "https://auth", "extract": {}}, "apply": {}},
+            "query": {"type": "single", "selector": "div", "variables": {}},
+        }
+        with mock.patch("mutimon.main.resolve_auth", return_value=({}, {}, {"token": "t"})):
+            with mock.patch("mutimon.main.fetch_page", side_effect=_http_error(500)):
+                with pytest.raises(requests.HTTPError):
+                    main.fetch_all_items(definition, {}, def_name="s")
 
 
 # ========================= send_error_email secret resolution =========================

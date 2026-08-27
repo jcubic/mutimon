@@ -540,6 +540,203 @@ class TestProcessRule:
         assert len(state) == 2
 
 
+# ========================= process_rule fetch errors =========================
+
+
+def _fetch_config(tmp_mutimon):
+    template = tmp_mutimon / "templates" / "test"
+    template.write_text("{{count}}")
+    return {
+        "email": {
+            "server": {
+                "host": "smtp.test.com",
+                "port": 587,
+                "password": "pass",
+                "email": "from@test.com",
+            }
+        },
+        "defs": {
+            "site": {
+                "url": "https://example.com",
+                "query": {
+                    "type": "list",
+                    "selector": "div.item",
+                    "variables": {"title": {"selector": "h3", "value": {"type": "text"}}},
+                },
+            }
+        },
+        "rules": [],
+    }
+
+
+def _fetch_rule():
+    return {
+        "ref": "site",
+        "name": "fetch-rule",
+        "subject": "s",
+        "template": "./templates/test",
+        "email": "user@test.com",
+    }
+
+
+class TestProcessRuleFetchErrors:
+    def setup_method(self):
+        main.setup_liquid({"defs": {}})
+
+    def test_structure_change_sends_error_email(self, tmp_mutimon):
+        config = _fetch_config(tmp_mutimon)
+        with mock.patch(
+            "mutimon.main.fetch_all_items", side_effect=ValueError("structure changed")
+        ):
+            with mock.patch("mutimon.main.send_error_email") as mock_err:
+                main.process_rule(config, _fetch_rule())
+                mock_err.assert_called_once()
+
+    def test_generic_fetch_error_is_swallowed(self, tmp_mutimon):
+        config = _fetch_config(tmp_mutimon)
+        with mock.patch(
+            "mutimon.main.fetch_all_items", side_effect=RuntimeError("boom")
+        ):
+            with mock.patch("mutimon.main.send_email") as mock_send:
+                main.process_rule(config, _fetch_rule())
+                mock_send.assert_not_called()
+
+
+# ========================= process_rule with per-rule logging =========================
+
+
+class TestProcessRuleLogging:
+    """Notification decisions on a rule with `log: true`."""
+
+    def setup_method(self):
+        main.setup_liquid({"defs": {}})
+
+    def _config(self, tmp_mutimon):
+        template = tmp_mutimon / "templates" / "test"
+        template.write_text("{% for item in items %}{{item.id}}{% endfor %}")
+        return {
+            "email": {
+                "server": {
+                    "host": "smtp.test.com",
+                    "port": 587,
+                    "password": "pass",
+                    "email": "from@test.com",
+                }
+            },
+            "defs": {
+                "stock": {
+                    "url": "https://example.com/{{symbol}}",
+                    "query": {
+                        "type": "single",
+                        "selector": "div.price",
+                        "id": {"source": "symbol", "regex": "(.+)"},
+                        "variables": {
+                            "price": {
+                                "selector": "span",
+                                "value": {"type": "text", "parse": "number"},
+                            }
+                        },
+                    },
+                }
+            },
+            "rules": [],
+        }
+
+    def _mock_fetch(self, price):
+        html = f'<div class="price"><span>{price}</span></div>'
+        resp = mock.MagicMock()
+        resp.text = html
+        resp.headers = {}
+        return mock.patch("mutimon.main.requests.request", return_value=resp)
+
+    def test_track_transitions_with_logging(self, tmp_mutimon):
+        config = self._config(tmp_mutimon)
+        rule = {
+            "ref": "stock",
+            "name": "track-log",
+            "subject": "s",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "log": True,
+            "input": {
+                "params": {"symbol": "TEST"},
+                "track": {
+                    "value": "{{price}}",
+                    "states": [
+                        {"test": "{{price}} > 200", "name": "above 200"},
+                        {"test": "{{price}} > 190", "name": "above 190"},
+                        {"test": "{{price}} <= 190", "silent": True},
+                    ],
+                },
+            },
+        }
+        # First run: new item, non-silent state -> NOTIFY (new+track) logged.
+        with self._mock_fetch(195):
+            with mock.patch("mutimon.main.send_email"):
+                main.process_rule(config, rule)
+        # Second run: price crosses above 200 -> NOTIFY (state change) logged.
+        with self._mock_fetch(205):
+            with mock.patch("mutimon.main.send_email") as mock_send:
+                main.process_rule(config, rule)
+                mock_send.assert_called_once()
+
+    def test_validator_new_item_with_logging(self, tmp_mutimon):
+        config = self._config(tmp_mutimon)
+        rule = {
+            "ref": "stock",
+            "name": "valid-new-log",
+            "subject": "s",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "log": True,
+            "input": {"params": {"symbol": "TEST"}, "validator": {"test": "{{price}} > 100"}},
+        }
+        # First run: valid new item -> NOTIFY (new) logged.
+        with self._mock_fetch(150):
+            with mock.patch("mutimon.main.send_email") as mock_send:
+                main.process_rule(config, rule)
+                mock_send.assert_called_once()
+
+    def test_validator_threshold_cross_with_logging(self, tmp_mutimon):
+        config = self._config(tmp_mutimon)
+        rule = {
+            "ref": "stock",
+            "name": "valid-cross-log",
+            "subject": "s",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "log": True,
+            "input": {"params": {"symbol": "TEST"}, "validator": {"test": "{{price}} > 100"}},
+        }
+        # First run: invalid item saved (below threshold), no notification.
+        with self._mock_fetch(50):
+            with mock.patch("mutimon.main.send_email") as mock_send:
+                main.process_rule(config, rule)
+                mock_send.assert_not_called()
+        # Second run: item crosses threshold -> NOTIFY (threshold crossed) logged.
+        with self._mock_fetch(150):
+            with mock.patch("mutimon.main.send_email") as mock_send:
+                main.process_rule(config, rule)
+                mock_send.assert_called_once()
+
+    def test_notify_always_filters_invalid(self, tmp_mutimon):
+        config = self._config(tmp_mutimon)
+        rule = {
+            "ref": "stock",
+            "name": "always-rule",
+            "notify": "always",
+            "subject": "s",
+            "template": "./templates/test",
+            "email": "user@test.com",
+            "input": {"params": {"symbol": "TEST"}, "validator": {"test": "{{price}} > 500"}},
+        }
+        with self._mock_fetch(100):
+            with mock.patch("mutimon.main.send_email") as mock_send:
+                main.process_rule(config, rule)
+                # price 100 fails validator -> filtered out -> no notification.
+                mock_send.assert_not_called()
+
+
 # ========================= init mode =========================
 
 
@@ -1205,6 +1402,112 @@ class TestRunFunction:
         # No state saved in dry-run
         state = main.load_state("test-rule")
         assert state == []
+
+
+# ========================= run() rule selection and dry-run =========================
+
+
+class TestRunRuleSelection:
+    def setup_method(self):
+        main.setup_liquid({"defs": {}})
+
+    def _base_config(self):
+        return {
+            "email": {
+                "server": {
+                    "host": "smtp.test.com",
+                    "port": 587,
+                    "password": "pass",
+                    "email": "from@test.com",
+                }
+            },
+            "defs": {
+                "site": {
+                    "url": "https://example.com",
+                    "query": {
+                        "type": "list",
+                        "selector": "div.item",
+                        "variables": {
+                            "title": {"selector": "h3", "value": {"type": "text"}}
+                        },
+                    },
+                }
+            },
+            "rules": [],
+        }
+
+    def _rule(self, name, ref="site"):
+        return {
+            "ref": ref,
+            "name": name,
+            "subject": "s",
+            "template": "./templates/test",
+            "email": "user@test.com",
+        }
+
+    def test_no_rules(self, tmp_mutimon, write_config):
+        write_config(self._base_config())
+        with mock.patch("sys.argv", ["mon", "--force"]):
+            with mock.patch("mutimon.main.send_email") as mock_send:
+                main.run()
+                mock_send.assert_not_called()
+
+    def test_targeted_force_skips_other_rules(self, tmp_mutimon, write_config):
+        config = self._base_config()
+        (tmp_mutimon / "templates" / "test").write_text("{{count}}")
+        config["rules"] = [self._rule("rule-a"), self._rule("rule-b")]
+        write_config(config)
+        called = []
+        real_process = main.process_rule
+
+        def spy(cfg, rule, **kw):
+            called.append(rule["name"])
+            return real_process(cfg, rule, **kw)
+
+        resp = mock.MagicMock()
+        resp.text = "<html></html>"
+        resp.headers = {}
+        with mock.patch("sys.argv", ["mon", "--force", "rule-a"]):
+            with mock.patch("mutimon.main.requests.request", return_value=resp):
+                with mock.patch("mutimon.main.process_rule", side_effect=spy):
+                    with mock.patch("mutimon.main.send_email"):
+                        main.run()
+        assert called == ["rule-a"]
+
+    def test_dry_run_definition_not_found(self, tmp_mutimon, write_config, capsys):
+        config = self._base_config()
+        config["rules"] = [self._rule("bad-rule", ref="missing-def")]
+        write_config(config)
+        with mock.patch("sys.argv", ["mon", "--dry-run", "--force", "bad-rule"]):
+            main.run()  # reports the bad ref, does not crash
+        err = capsys.readouterr().err
+        assert "Definition 'missing-def' not found" in err
+
+    def test_dry_run_fetch_exception(self, tmp_mutimon, write_config, capsys):
+        config = self._base_config()
+        config["rules"] = [self._rule("boom-rule")]
+        write_config(config)
+        with mock.patch("sys.argv", ["mon", "--dry-run", "--force", "boom-rule"]):
+            with mock.patch(
+                "mutimon.main.fetch_all_items", side_effect=RuntimeError("boom")
+            ):
+                main.run()
+        err = capsys.readouterr().err
+        assert "boom" in err
+
+    def test_dry_run_truncates_item_preview(self, tmp_mutimon, write_config, capsys):
+        config = self._base_config()
+        config["rules"] = [self._rule("many-rule")]
+        write_config(config)
+        many = [{"id": str(i), "title": f"t{i}"} for i in range(5)]
+        with mock.patch("sys.argv", ["mon", "--dry-run", "--force", "many-rule", "-v"]):
+            with mock.patch("mutimon.main.fetch_all_items", return_value=many):
+                main.run()
+        out = capsys.readouterr().out
+        assert "Found 5 item(s)" in out
+        assert "id=2" in out  # first three previewed
+        assert "id=3" not in out  # rest collapsed
+        assert "... and 2 more" in out
 
 
 # ========================= flatten =========================
@@ -2011,3 +2314,96 @@ class TestResetRule:
 
         assert (tmp_mutimon / "data" / "keep").exists()
         assert not (tmp_mutimon / "data" / "drop").exists()
+
+
+# ========================= --reset CLI handling =========================
+
+
+class TestRunReset:
+    """In-process coverage for the --reset branch of run().
+
+    tests/test_cli.py covers the same flag end-to-end via a subprocess, which
+    the coverage run cannot see, so the CLI handling is exercised here too.
+    """
+
+    def setup_method(self):
+        main.verbose = False
+
+    def _run(self, *args):
+        with mock.patch("sys.argv", ["mon", "--reset", *args]):
+            with mock.patch.object(main, "load_secrets", return_value={}):
+                main.run()
+
+    def test_removes_all_stored_data(self, tmp_mutimon, write_config, capsys):
+        write_config()
+        main.save_state("test-rule", [{"id": "1", "title": "A"}])
+        main.save_last_run("test-rule")
+        main.save_email_to_file("test-rule", "Subject", "Body")
+
+        self._run("test-rule")
+
+        data = tmp_mutimon / "data"
+        assert not (data / "test-rule").exists()
+        assert not (data / ".lastrun_test-rule").exists()
+        assert not (data / "emails" / "test-rule.txt").exists()
+        out = capsys.readouterr().out
+        assert "removed 3 file(s)" in out
+        assert str(data / "test-rule") in out
+
+    def test_no_stored_data_reports_nothing_removed(self, tmp_mutimon, write_config, capsys):
+        write_config()
+
+        self._run("test-rule")
+
+        out = capsys.readouterr().out
+        assert "no stored data found" in out
+
+    def test_multiple_rules(self, tmp_mutimon, write_config, sample_config, capsys):
+        sample_config["rules"].append({
+            "ref": "test-site",
+            "name": "test-rule-2",
+            "schedule": "0 * * * *",
+            "subject": "Test 2",
+            "template": "./templates/test",
+            "email": "user@test.com",
+        })
+        write_config(sample_config)
+        main.save_state("test-rule", [{"id": "1"}])
+        main.save_state("test-rule-2", [{"id": "2"}])
+
+        self._run("test-rule", "test-rule-2")
+
+        assert not (tmp_mutimon / "data" / "test-rule").exists()
+        assert not (tmp_mutimon / "data" / "test-rule-2").exists()
+        out = capsys.readouterr().out
+        assert "Reset 'test-rule':" in out
+        assert "Reset 'test-rule-2':" in out
+
+    def test_unknown_rule_exits(self, tmp_mutimon, write_config, capsys):
+        write_config()
+
+        with pytest.raises(SystemExit) as exc:
+            self._run("nonexistent")
+
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "Rule(s) not found: nonexistent" in err
+        assert "test-rule" in err
+
+    def test_unknown_rule_keeps_data_of_known_rule(self, tmp_mutimon, write_config):
+        write_config()
+        main.save_state("test-rule", [{"id": "1"}])
+
+        with pytest.raises(SystemExit):
+            self._run("test-rule", "nonexistent")
+
+        # Names are validated before anything is deleted
+        assert (tmp_mutimon / "data" / "test-rule").exists()
+
+    def test_does_not_run_rules(self, tmp_mutimon, write_config):
+        write_config()
+        with mock.patch("mutimon.main.requests.request") as fake_request:
+            with mock.patch("mutimon.main.send_email") as fake_send:
+                self._run("test-rule")
+        fake_request.assert_not_called()
+        fake_send.assert_not_called()

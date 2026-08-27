@@ -267,3 +267,29 @@ class TestExtractVariablesWithFind:
         }
         data = main.extract_variables(el, variables)
         assert "<b>bold</b>" in data["body"]
+
+    def test_select_step_no_match_uses_default(self):
+        el = BeautifulSoup('<div id="a"></div>', "html.parser").select_one("#a")
+        variables = {
+            "v": {
+                "find": [["select", ".missing"]],
+                "value": {"type": "text"},
+                "default": "D",
+            }
+        }
+        data = main.extract_variables(el, variables)
+        assert data["v"] == "D"
+
+    def test_siblings_step_with_remove_transform(self):
+        html = '<div id="a"></div><p>keep <b class="x">drop</b></p>'
+        el = BeautifulSoup(html, "html.parser").select_one("#a")
+        variables = {
+            "v": {
+                "find": [["siblings"]],
+                "transform": [["remove", ".x"]],
+                "value": {"type": "text"},
+            }
+        }
+        data = main.extract_variables(el, variables)
+        assert "keep" in data["v"]
+        assert "drop" not in data["v"]

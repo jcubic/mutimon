@@ -413,6 +413,14 @@ class TestParseMoney:
     def test_empty_returns_zero(self):
         assert main.parse_money("") == 0
 
+    def test_babel_failure_uses_basic_parser(self):
+        with mock.patch("mutimon.main.parse_decimal", side_effect=Exception("boom")):
+            assert main.parse_money("12.5 USD") == 12.5
+
+    def test_babel_and_fallback_failure_returns_zero(self):
+        with mock.patch("mutimon.main.parse_decimal", side_effect=Exception("boom")):
+            assert main.parse_money("1.2.3 zl") == 0.0
+
 
 class TestParseDate:
     def _pl(self):
@@ -507,6 +515,30 @@ class TestExtractVariables:
         }
         result = main.extract_variables(element, variables)
         assert result["url"] == "/link"
+
+    def test_sibling_skips_spacer(self):
+        html = (
+            '<div id="a"></div>'
+            '<div class="spacer"></div>'
+            '<div class="real"><span>X</span></div>'
+        )
+        el = BeautifulSoup(html, "html.parser").select_one("#a")
+        spec = {"v": {"sibling": True, "selector": "span", "value": {"type": "text"}}}
+        data = main.extract_variables(el, spec)
+        assert data["v"] == "X"
+
+    def test_sibling_missing_uses_default(self):
+        el = BeautifulSoup('<div id="a"></div>', "html.parser").select_one("#a")
+        spec = {
+            "v": {
+                "sibling": True,
+                "selector": "span",
+                "value": {"type": "text"},
+                "default": "NONE",
+            }
+        }
+        data = main.extract_variables(el, spec)
+        assert data["v"] == "NONE"
 
 
 class TestExtractId:
@@ -627,6 +659,16 @@ class TestFindNextPageUrl:
         )
         assert result == "https://example.com/p/2"
 
+    def test_numbered_next_without_href_returns_none(self):
+        html = (
+            '<div class="pg">'
+            '<a class="p active" href="/1">1</a>'
+            '<a class="p">2</a>'
+            "</div>"
+        )
+        spec = {"type": "numbered", "selector": ".pg a.p", "active_class": "active"}
+        assert main.find_next_page_url(html, spec, "https://x.com") is None
+
 
 class TestCheckExpect:
     def test_all_present(self, sample_html):
@@ -644,6 +686,23 @@ class TestCheckExpect:
 
     def test_none_expect(self, sample_html):
         assert main.check_expect(sample_html, None, "http://test") == []
+
+
+class TestDumpHtml:
+    def test_writes_dump_file(self, tmp_mutimon, monkeypatch, capsys):
+        monkeypatch.setattr(main, "verbose", True)
+        main.dump_html("<html>body</html>", "https://x.com/page")
+        dumps = list((tmp_mutimon / "data" / "dumps").iterdir())
+        assert len(dumps) == 1
+        assert dumps[0].read_text() == "<html>body</html>"
+        assert "HTML dump saved" in capsys.readouterr().out
+
+    def test_write_failure_is_swallowed(self, tmp_mutimon, monkeypatch, capsys):
+        monkeypatch.setattr(main, "verbose", True)
+        with mock.patch("builtins.open", side_effect=OSError("no disk")):
+            # A failed diagnostic dump must never break the run.
+            main.dump_html("<html></html>", "https://x.com/page")
+        assert "HTML dump saved" not in capsys.readouterr().out
 
 
 # ========================= Validators =========================
