@@ -1,4 +1,5 @@
 ## 0.6.0
+* check `reject` selectors before `expect` so no-result pages don't report a structure change
 * add `--reset` options
 * fix `flatten` flag on inputs with one item
 

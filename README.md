@@ -612,6 +612,8 @@ The `reject` field is the inverse of `expect` — it lists CSS selectors that in
 
 For example, nofluffjobs.com shows a "Brak wyników wyszukiwania" message and recommended jobs when a language has no remote offers. The `reject` selector detects the no-results element and prevents those recommendations from being treated as real results.
 
+`reject` is evaluated before `expect`. A page that declares it has no results legitimately lacks the elements `expect` looks for, so a matching `reject` selector returns 0 items instead of raising a structure change. Sites that render an empty listing with no recommendations — such as pracuj.pl, which shows a `[data-test='zero-offers-section']` banner — need a `reject` selector for this reason, otherwise every search that genuinely returns nothing is reported as a broken layout.
+
 ## Multiple inputs
 
 The `input` field allows a single rule to scrape multiple pages with different parameters and combine the results into one email. This is useful for monitoring multiple items on the same website (e.g. multiple stock symbols).

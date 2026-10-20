@@ -1790,6 +1790,17 @@ def fetch_all_items(definition, params, def_name=None):
                 else:
                     raise
 
+            # Check reject selectors before 'expect': a page that declares it has
+            # no results legitimately lacks the result elements 'expect' looks for,
+            # and must not be reported as a structure change.
+            reject_selectors = query_spec.get("reject")
+            if reject_selectors:
+                soup = BeautifulSoup(html, bs_parser)
+                for sel in reject_selectors:
+                    if soup.select_one(sel):
+                        log(f"  Reject selector matched: {sel} — skipping results")
+                        return all_items
+
             # Check expected structure on first page only
             if page_num == 1 and expect_selectors:
                 missing = check_expect(html, expect_selectors, url, bs_parser=bs_parser)
@@ -1799,15 +1810,6 @@ def fetch_all_items(definition, params, def_name=None):
                         f"HTML structure changed at {url}. "
                         f"Missing expected selector(s): {', '.join(missing)}"
                     )
-
-            # Check reject selectors
-            reject_selectors = query_spec.get("reject")
-            if reject_selectors:
-                soup = BeautifulSoup(html, bs_parser)
-                for sel in reject_selectors:
-                    if soup.select_one(sel):
-                        log(f"  Reject selector matched: {sel} — skipping results")
-                        return all_items
 
             items = parse_items(html, query_spec, locale=locale, bs_parser=bs_parser)
             if not items:

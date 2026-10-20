@@ -157,6 +157,46 @@ class TestFetchAllItems:
             items = main.fetch_all_items(definition, {})
         assert len(items) == 0
 
+    def test_reject_takes_precedence_over_expect(self):
+        """A no-results page must not be reported as a structure change."""
+        html = """
+        <html><body>
+        <div class="no-results">No results found</div>
+        </body></html>
+        """
+        definition = {
+            "url": "https://example.com",
+            "query": {
+                "type": "list",
+                "selector": "div.item",
+                "expect": ["div.item", "h3"],
+                "reject": [".no-results"],
+                "variables": {
+                    "title": {"selector": "h3", "value": {"type": "text"}},
+                },
+            },
+        }
+        with self._mock_fetch(html):
+            items = main.fetch_all_items(definition, {})
+        assert len(items) == 0
+
+    def test_expect_still_raises_when_reject_absent(self):
+        """Structure checks keep working on pages with no no-results marker."""
+        html = "<html><body><p>Totally different markup</p></body></html>"
+        definition = {
+            "url": "https://example.com",
+            "query": {
+                "type": "list",
+                "selector": "div.item",
+                "expect": ["div.item"],
+                "reject": [".no-results"],
+                "variables": {},
+            },
+        }
+        with self._mock_fetch(html):
+            with pytest.raises(ValueError, match="Missing expected"):
+                main.fetch_all_items(definition, {})
+
 
 # ========================= query_json =========================
 
