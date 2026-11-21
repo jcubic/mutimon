@@ -3,6 +3,7 @@
 * add `--reset` options
 * fix `flatten` flag on inputs with one item
 * fix `--dry-run` ignoring validators referenced by `{"@id": "name"}`
+* pin `python-liquid` to 2.x, version 3.0 redesigned the custom tag API used by `defs.commands`
 
 ## 0.5.0
 * expose `http` data as a variable

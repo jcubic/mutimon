@@ -27,7 +27,8 @@ dependencies = [
     "requests",
     "beautifulsoup4",
     "lxml",
-    "python-liquid",
+    # 3.0 redesigned the custom tag API used by defs.commands (see CommandNode)
+    "python-liquid>=2,<3",
     "croniter",
     "expression-py",
     "jsonschema",
