@@ -656,6 +656,69 @@ class TestRunDryRunBranches:
         out = capsys.readouterr().out
         assert "DRY RUN" in out
 
+    def test_dry_run_resolves_validator_reference(
+        self, tmp_mutimon, write_config, capsys
+    ):
+        """A {"@id": ...} validator filters items in --dry-run, as in a real run."""
+        config = {
+            "email": {
+                "server": {
+                    "host": "smtp.test.com",
+                    "port": 587,
+                    "password": "x",
+                    "email": "x@x.com",
+                }
+            },
+            "defs": {
+                "validators": {
+                    "high-score": {"test": "{{score}} > 50"},
+                },
+                "site": {
+                    "url": "https://example.com",
+                    "query": {
+                        "type": "list",
+                        "selector": "div.item",
+                        "variables": {
+                            "title": {"selector": "h3", "value": {"type": "text"}},
+                            "score": {
+                                "selector": ".score",
+                                "value": {"type": "text", "parse": "number"},
+                                "default": "0",
+                            },
+                        },
+                    },
+                },
+            },
+            "rules": [
+                {
+                    "ref": "site",
+                    "name": "dry-val-ref",
+                    "schedule": "0 * * * *",
+                    "subject": "Test",
+                    "template": "./templates/test",
+                    "email": "x@x.com",
+                    "input": {"validator": {"@id": "high-score"}},
+                }
+            ],
+        }
+        write_config(config)
+        template = tmp_mutimon / "templates" / "test"
+        template.write_text("{{count}}")
+        html = '''<html><body>
+            <div class="item"><h3>A</h3><span class="score">100</span></div>
+            <div class="item"><h3>B</h3><span class="score">10</span></div>
+        </body></html>'''
+        fake_resp = mock.MagicMock()
+        fake_resp.text = html
+        fake_resp.headers = {}
+        with mock.patch("sys.argv", ["mon", "--dry-run", "--force", "-v"]):
+            with mock.patch("mutimon.main.requests.request", return_value=fake_resp):
+                main.run()
+        out = capsys.readouterr().out
+        assert "Found 1 item(s)" in out
+        assert "'title': 'A'" in out
+        assert "'title': 'B'" not in out
+
 
 class TestExtractIdEdgeCases:
     def test_hash_fallback(self):

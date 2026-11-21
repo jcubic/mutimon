@@ -2879,7 +2879,8 @@ def run():
             default_ref = rule.get("ref")
             default_def = config["defs"].get(default_ref) if default_ref else None
             info(f"[DRY RUN] Rule: '{rule_name}'")
-            inputs = resolve_inputs(rule, definition=default_def)
+            validators_defs = config.get("defs", {}).get("validators", {})
+            inputs = resolve_inputs(rule, validators_defs, definition=default_def)
             all_items = []
             for input_entry in inputs:
                 params = input_entry["params"]

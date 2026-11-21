@@ -2,6 +2,7 @@
 * check `reject` selectors before `expect` so no-result pages don't report a structure change
 * add `--reset` options
 * fix `flatten` flag on inputs with one item
+* fix `--dry-run` ignoring validators referenced by `{"@id": "name"}`
 
 ## 0.5.0
 * expose `http` data as a variable
